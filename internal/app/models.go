@@ -98,10 +98,6 @@ func (a *App) refreshModelsFromUpstream(ctx context.Context) (int, error) {
 	return total, nil
 }
 
-func (a *App) registeredModelsForVendor(vendorID string) []pluginapi.ModelInfo {
-	return a.models.Registered(vendorID)
-}
-
 func (a *App) resolveOutboundModel(vendorID, model string) string {
 	return a.models.ResolveOutboundModel(vendorID, model)
 }

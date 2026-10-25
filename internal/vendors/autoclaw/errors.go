@@ -79,16 +79,3 @@ func codeText(code int64) string {
 	}
 	return strconv.FormatInt(code, 10)
 }
-
-func strconv_FormatInt(v int64) string {
-	// 小工具：避免在本包重复引 strconv 的多处样板。
-	digits := ""
-	if v == 0 {
-		return "0"
-	}
-	for v > 0 {
-		digits = string(rune('0'+v%10)) + digits
-		v /= 10
-	}
-	return digits
-}
