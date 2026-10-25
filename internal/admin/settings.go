@@ -61,13 +61,15 @@ func (s *Service) handleSettingsRequest(req pluginapi.ManagementRequest) plugina
 			changed["prompt_mode"] = promptMode
 		}
 		if body.ModelNameTag != nil {
-			if current.ModelNameTag != modelNameTag {
-				// 渠道标识改变对外模型 ID：宿主模型注册表未重建前 /v1/models
-				// 仍是旧名字。置 RestartPending 与手动别名/禁用同语义——
-				// 控制台据此提示「待生效」并触发 syncModelConfig 自愈。
+			// 渠道标识改变对外模型 ID：宿主模型注册表未重建前 /v1/models
+			// 仍是旧名字。置 RestartPending 与手动别名/禁用同语义——控制台
+			// 据此提示「待生效」并触发 syncModelConfig 自愈。比较**生效值**：
+			// 页面覆盖与 YAML 相同时不重建注册表。
+			before := EffectiveModelNameTag(s.deps.Config(), current.ModelNameTag)
+			current.ModelNameTag = modelNameTag
+			if EffectiveModelNameTag(s.deps.Config(), modelNameTag) != before {
 				current.RestartPending = true
 			}
-			current.ModelNameTag = modelNameTag
 			changed[ModelNameTagKey] = modelNameTag
 		}
 		if current.TaskSchedules == nil {
@@ -132,7 +134,12 @@ func normalizeModelNameTagPointer(input *string) (string, error) {
 		// 空串表示撤销页面覆盖，重新由 YAML 配置决定。
 		return "", nil
 	}
-	return NormalizeModelNameTag(trimmed)
+	tag, errTag := NormalizeModelNameTag(trimmed)
+	if errTag != nil {
+		// 与 prompt_mode 同形：非法输入是 400，不能落成 500。
+		return "", core.NewPluginError("model_name_tag_invalid", errTag.Error(), http.StatusBadRequest)
+	}
+	return tag, nil
 }
 
 // settingsView 是 /status 的 settings 载荷：任务引擎的可读设置 + 提示词过滤现状。

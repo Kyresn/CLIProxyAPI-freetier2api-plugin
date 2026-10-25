@@ -78,13 +78,13 @@ const (
 
 	// PromptModePassThrough / PromptModeCustom / PromptModeAppend 是合法模式。
 	PromptModePassThrough = "passthrough"
+	PromptModeCustom      = "custom"
+	PromptModeAppend      = "append"
 
 	// ModelNameTagOff / Prefix / Suffix 是模型名渠道标识的三种模式。
 	ModelNameTagOff    = "off"
 	ModelNameTagPrefix = "prefix"
 	ModelNameTagSuffix = "suffix"
-	PromptModeCustom   = "custom"
-	PromptModeAppend   = "append"
 )
 
 // deprecatedConfigKeys 是改名后的旧配置键：解析时直接归一化到当前键，

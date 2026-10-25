@@ -124,7 +124,7 @@ Configure under `plugins.configs.freetier2api` in `config.yaml` (runtime setting
 | `auto_checkin_at` | string | `10:00` | Daily check-in time (`HH:MM`, local time) |
 | `auto_tasks` | bool | `true` | Enable automated daily tasks |
 | `prompt_mode` | string | `passthrough` | System prompt filter mode: `passthrough` / `custom` / `append` |
-| `model_name_tag` | string | `off` | Channel tag on model IDs: `off` (default) / `prefix` / `suffix`. When enabled, every vendor model gets a vendor prefix/suffix in its public ID (e.g. `zcode-GLM-5.3`) so same-name models can be pinned to a channel; tags are per-vendor, not per-account. Takes effect after the host rebuilds its model registry (restart or credential reload; the console shows a restart-pending hint) |
+| `model_name_tag` | string | `off` | Channel tag on model IDs: `off` (default) / `prefix` / `suffix`. When enabled, every vendor model gets a vendor prefix/suffix in its public ID (e.g. `zcode-GLM-5.3`) so same-name models can be pinned to a channel; tags are per-vendor, not per-account. Once tagged, same-name models are no longer merged across vendors. Takes effect after the host rebuilds its model registry (restart or credential reload; the console shows a restart-pending hint) |
 | `disabled_models` | string / list | empty | Disabled models (`vendor:model` or bare name) |
 | `extra_models` | string | empty | Additional model IDs to register (comma-separated) |
 | `state_dir` | string | `~/.freetier2api-plugin` | State and cache directory |
