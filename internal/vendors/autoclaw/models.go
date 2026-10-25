@@ -36,6 +36,12 @@ type Model struct {
 	IsReasoning     bool
 	SupportsImages  bool
 	SupportsTools   bool
+	// Credits 是上游 creditConsumptionLevel 的档位文案（「低」/「中」/「高」），
+	// 也可能是数字档位编号——数字会被转成「档位 N」，不参与倍率归一化。
+	//
+	// 它是「这一档要扣多少点数」的文字档位，不是折扣倍数，**不能**换算成
+	// 数字倍率；上游没给就是空串（控制台显示「—」，不臆造成免费）。
+	Credits string
 }
 
 // modelConfigEntry 是 autoclaw-model-config 里的一条模型记录。
@@ -47,6 +53,9 @@ type modelConfigEntry struct {
 	MaxTokens     int64    `json:"maxTokens"`
 	Reasoning     bool     `json:"reasoning"`
 	Input         []string `json:"input"`
+	// CreditConsumptionLevel 是计费档位，实测是中文档位文案；也见过数字档位，
+	// 因此用 RawMessage 收下再按形态解码，避免上游换形态时整份清单解析失败。
+	CreditConsumptionLevel json.RawMessage `json:"creditConsumptionLevel"`
 }
 
 // modelConfigPayload 兼容上游两种响应形态：
@@ -152,9 +161,30 @@ func fetchModelConfig(ctx context.Context, baseURL, token string) ([]Model, erro
 			IsReasoning:     entry.Reasoning,
 			SupportsImages:  modelAcceptsImages(entry.Input),
 			SupportsTools:   true,
+			Credits:         levelText(entry.CreditConsumptionLevel),
 		})
 	}
 	return out, nil
+}
+
+// levelText 把上游的计费档位解成展示文案。
+//
+// 实测是字符串（「低」/「中」/「高」）；数字是**档位编号**而不是倍率，
+// 必须带上「档位」前缀，否则 core.FormatRate 会把 3 归一化成 "3.00X"，
+// 在控制台变成一个看得见的伪倍率。对象等未知形态返回空串：宁可显示「—」。
+func levelText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if errText := json.Unmarshal(raw, &text); errText == nil {
+		return strings.TrimSpace(text)
+	}
+	var number json.Number
+	if errNumber := json.Unmarshal(raw, &number); errNumber == nil {
+		return "档位 " + number.String()
+	}
+	return ""
 }
 
 // modelAcceptsImages 报告上游声明的输入模态里是否含图片。

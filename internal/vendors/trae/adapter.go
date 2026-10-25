@@ -27,6 +27,8 @@ type adapter struct {
 	sessions       *SessionStore
 	// catalog 是模型目录缓存（按账号），随实例隔离。
 	catalog catalogCache
+	// credits 缓存最近一轮目录探测的倍率表（官方模型 ID → 展示文案）。
+	credits core.CreditTable
 }
 
 // profile 返回当前 profile 快照（编译期 profile + 运行期版本覆盖）。
@@ -147,10 +149,17 @@ func (v *adapter) StaticModels(ctx context.Context) ([]pluginapi.ModelInfo, erro
 	if errModels != nil {
 		return nil, errModels
 	}
-	return modelsToPluginAPI(models), nil
+	return v.modelsToPluginAPI(models), nil
 }
 
-func modelsToPluginAPI(models []Model) []pluginapi.ModelInfo {
+// modelsToPluginAPI 把上游模型条目转成宿主契约类型，顺带记下倍率表。
+//
+// 倍率与清单必须出自同一轮探测：分开取会出现「模型换了一批、倍率还是
+// 上一批」的错配。
+func (v *adapter) modelsToPluginAPI(models []Model) []pluginapi.ModelInfo {
+	core.FillCredits(&v.credits, models,
+		func(model Model) string { return model.ID },
+		func(model Model) string { return model.Credits })
 	return core.ConvertModels(models, func(model Model) (core.ModelDescriptor, bool) {
 		if strings.TrimSpace(model.ID) == "" {
 			return core.ModelDescriptor{}, false
@@ -165,6 +174,11 @@ func modelsToPluginAPI(models []Model) []pluginapi.ModelInfo {
 			CanDisableThinking: !model.IsReasoning,
 		}, true
 	})
+}
+
+// ModelCredits 实现 core.CreditsProvider：返回「官方模型 ID → 计费倍率」。
+func (v *adapter) ModelCredits() map[string]string {
+	return v.credits.Snapshot()
 }
 
 // ---- 执行 ----
@@ -271,4 +285,5 @@ var (
 	_ core.LoginProvider     = (*adapter)(nil)
 	_ core.LoginSessionOwner = (*adapter)(nil)
 	_ core.QuotaProvider     = (*adapter)(nil)
+	_ core.CreditsProvider   = (*adapter)(nil)
 )

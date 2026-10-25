@@ -35,6 +35,10 @@ type Model struct {
 	MaxTokens     int    `json:"max_tokens"`
 	SupportsTools bool   `json:"supports_tools"`
 	IsReasoning   bool   `json:"is_reasoning"`
+	// Credits 是上游 consumption_rate 的计费倍率（原样文案，如 "0.94"）。
+	//
+	// empty 表示上游没有倍率（enable=false 或缺字段），控制台显示「—」。
+	Credits string `json:"credits,omitempty"`
 }
 
 // ResolvedModel 是一次对话请求使用的模型标识对。
@@ -85,6 +89,47 @@ func (c *catalogCache) resolve(ctx context.Context, model string, cfg Config, cr
 //
 // 缓存键带上 function 与构建号：目录内容由这两者共同决定，只按账号缓存会在
 // 版本号被配置改写后继续命中旧清单（最长 catalogTTL）。
+// catalogEntries 把原始条目筛成「可选对话模型」与展示元数据。
+//
+// 单独成函数是为了能在测试里直接喂两代键名的响应，不必起 HTTP 服务。
+func catalogEntries(items []catalogItem) (map[string]ResolvedModel, map[string]Model) {
+	models := make(map[string]ResolvedModel, len(items))
+	metadata := make(map[string]Model, len(items))
+	for _, item := range items {
+		name := strings.TrimSpace(item.ConfigName)
+		if name == "" || !item.ConfigSwitch {
+			continue
+		}
+		// usage=custom_model/summary 的条目是路由配置或内部摘要，不是可选对话模型。
+		if usage := strings.ToLower(strings.TrimSpace(item.Usage)); usage != "" && usage != "chat_completion" {
+			continue
+		}
+		if item.CustomModels != nil {
+			continue
+		}
+		wire, maxTokens := selectWireModel(item.ModelDetailList)
+		if wire == "" {
+			continue
+		}
+		display := strings.TrimSpace(item.DisplayConfig.DisplayName)
+		if display == "" {
+			display = name
+		}
+		models[strings.ToLower(name)] = ResolvedModel{ConfigName: name, WireName: wire}
+		metadata[name] = Model{
+			ID:            name,
+			Name:          display,
+			Description:   "Trae 上游模型",
+			ContextWindow: item.ContextWindow.Dev,
+			MaxTokens:     maxTokens,
+			SupportsTools: strings.Contains(item.ExtraConfig, `"native_function_call":true`),
+			IsReasoning:   item.DisplayConfig.ModelCapability == "reasoning_model",
+			Credits:       consumptionRate(item.DisplayContactConfig),
+		}
+	}
+	return models, metadata
+}
+
 func (c *catalogCache) load(ctx context.Context, cred *Credential, cfg Config) (catalogEntry, bool) {
 	key := strings.Join([]string{cfg.VendorID, cred.UID, cfg.Function, cfg.IDEVersionCode}, "|")
 	var (
@@ -142,6 +187,37 @@ type catalogItem struct {
 	} `json:"display_config"`
 	ExtraConfig     string          `json:"extra_config"`
 	ModelDetailList []catalogDetail `json:"model_detail_list"`
+	// DisplayContactConfig 里带计费倍率，但字段大小写在两代响应里不一致
+	// （display_contact_config / displayContactConfig，内部还有 camelCase
+	// 与 snake_case 两态），因此整段收下再按键名不区分大小写地取。
+	DisplayContactConfig json.RawMessage `json:"display_contact_config"`
+}
+
+// UnmarshalJSON 兼容外层键名的两种写法。
+//
+// 旧版是 snake_case，新版外层换成了 camelCase（displayContactConfig、
+// extraConfig）。只认一种就会让整条倍率/工具能力静默变成「未知」。
+func (item *catalogItem) UnmarshalJSON(data []byte) error {
+	type alias catalogItem
+	var aux struct {
+		*alias
+		DisplayContactConfigCamel json.RawMessage `json:"displayContactConfig"`
+		ExtraConfigCamel          json.RawMessage `json:"extraConfig"`
+	}
+	aux.alias = (*alias)(item)
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if len(item.DisplayContactConfig) == 0 {
+		item.DisplayContactConfig = aux.DisplayContactConfigCamel
+	}
+	if item.ExtraConfig == "" && len(aux.ExtraConfigCamel) > 0 {
+		var text string
+		if err := json.Unmarshal(aux.ExtraConfigCamel, &text); err == nil {
+			item.ExtraConfig = text
+		}
+	}
+	return nil
 }
 
 type catalogDetail struct {
@@ -241,42 +317,8 @@ func fetchCatalog(ctx context.Context, cred *Credential, cfg Config) (catalogEnt
 		return catalogEntry{}, false
 	}
 
-	entry := catalogEntry{
-		models:    map[string]ResolvedModel{},
-		metadata:  map[string]Model{},
-		fetchedAt: time.Now(),
-	}
-	for _, item := range parsed.ConfigInfoList {
-		name := strings.TrimSpace(item.ConfigName)
-		if name == "" || !item.ConfigSwitch {
-			continue
-		}
-		// usage=custom_model/summary 的条目是路由配置或内部摘要，不是可选对话模型。
-		if usage := strings.ToLower(strings.TrimSpace(item.Usage)); usage != "" && usage != "chat_completion" {
-			continue
-		}
-		if item.CustomModels != nil {
-			continue
-		}
-		wire, maxTokens := selectWireModel(item.ModelDetailList)
-		if wire == "" {
-			continue
-		}
-		display := strings.TrimSpace(item.DisplayConfig.DisplayName)
-		if display == "" {
-			display = name
-		}
-		entry.models[strings.ToLower(name)] = ResolvedModel{ConfigName: name, WireName: wire}
-		entry.metadata[name] = Model{
-			ID:            name,
-			Name:          display,
-			Description:   "Trae 上游模型",
-			ContextWindow: item.ContextWindow.Dev,
-			MaxTokens:     maxTokens,
-			SupportsTools: strings.Contains(item.ExtraConfig, `"native_function_call":true`),
-			IsReasoning:   item.DisplayConfig.ModelCapability == "reasoning_model",
-		}
-	}
+	models, metadata := catalogEntries(parsed.ConfigInfoList)
+	entry := catalogEntry{models: models, metadata: metadata, fetchedAt: time.Now()}
 	if len(entry.models) == 0 {
 		// 上游偶尔会整体降级（例如构建号低于门控时只回旧清单）。把条目摘要
 		// 打出来，才能区分「目录结构变了」和「版本号被降级」。
@@ -286,6 +328,86 @@ func fetchCatalog(ctx context.Context, cred *Credential, cfg Config) (catalogEnt
 		return catalogEntry{}, false
 	}
 	return entry, true
+}
+
+// consumptionRate 从 display_contact_config 里取计费倍率。
+//
+// 上游形状：display_contact_config.consumption_rate{enable, data{enable, rate}}，
+// 键名有 snake_case / camelCase 两态，逐层按键名不区分大小写取。enable=false
+// 表示该模型不参与计费（等价于「没有倍率」）；rate=0 是合法的限免档，保留。
+func consumptionRate(raw json.RawMessage) string {
+	contact, okContact := decodeObject(raw)
+	if !okContact {
+		return ""
+	}
+	rate, okRate := decodeObject(lookupRaw(contact, "consumption_rate"))
+	if !okRate {
+		return ""
+	}
+	if disabled(rate) {
+		return ""
+	}
+	data, okData := decodeObject(lookupRaw(rate, "data"))
+	if !okData || disabled(data) {
+		return ""
+	}
+	value := lookupRaw(data, "rate")
+	if len(value) == 0 {
+		return ""
+	}
+	var text string
+	if errText := json.Unmarshal(value, &text); errText == nil {
+		return strings.TrimSpace(text)
+	}
+	var number json.Number
+	if errNumber := json.Unmarshal(value, &number); errNumber == nil {
+		return number.String()
+	}
+	return ""
+}
+
+// decodeObject 把 JSON 解成键值对表；空值/非对象返回 false。
+func decodeObject(raw json.RawMessage) (map[string]json.RawMessage, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, false
+	}
+	var doc map[string]json.RawMessage
+	if errDoc := json.Unmarshal(raw, &doc); errDoc != nil || doc == nil {
+		return nil, false
+	}
+	return doc, true
+}
+
+// lookupRaw 按键名取值，忽略大小写与下划线（兼容 camelCase 与 snake_case 混用）。
+//
+// 只做 EqualFold 不够：consumptionRate 与 consumption_rate 差在分隔符上，
+// 折叠大小写后仍然不相等，倍率会被静默漏掉。
+func lookupRaw(doc map[string]json.RawMessage, key string) json.RawMessage {
+	want := normalizeKey(key)
+	for name, value := range doc {
+		if normalizeKey(name) == want {
+			return value
+		}
+	}
+	return nil
+}
+
+// normalizeKey 把键名归一成「小写 + 去掉下划线」。
+func normalizeKey(key string) string {
+	return strings.ToLower(strings.ReplaceAll(key, "_", ""))
+}
+
+// disabled 报告对象里的 enable 是否显式为 false（缺字段当启用）。
+func disabled(doc map[string]json.RawMessage) bool {
+	raw := lookupRaw(doc, "enable")
+	if len(raw) == 0 {
+		return false
+	}
+	var enabled bool
+	if errEnable := json.Unmarshal(raw, &enabled); errEnable != nil {
+		return false
+	}
+	return !enabled
 }
 
 // summarizeCatalog 生成原始条目摘要，只含分类字段、不涉及凭证。

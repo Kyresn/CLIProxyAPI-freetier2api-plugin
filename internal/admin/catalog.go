@@ -372,6 +372,8 @@ func (c *Catalog) cacheProbed(vendorID string, models []pluginapi.ModelInfo) boo
 //
 // 只有实现了 CreditsProvider 的供应商才有倍率；宿主契约里没有这个字段，
 // 因此不能从 models 里推。空值不写入，避免把「没提供」当成「免费」。
+// 倍率的归一化（FormatRate）由各供应商在自己那层完成，这里只做去空格，
+// 不再二次格式化——否则「0」这类合法值会被反复改写。
 // 调用方必须在 Catalog 写锁之外调用。
 func (c *Catalog) creditsFromProvider(vendorID string) map[string]string {
 	vendor, okVendor := c.registry.ByID(vendorID)
@@ -385,9 +387,9 @@ func (c *Catalog) creditsFromProvider(vendorID string) map[string]string {
 	credits := make(map[string]string)
 	for id, value := range provider.ModelCredits() {
 		id = strings.TrimSpace(id)
-		rate := core.FormatRate(value)
-		if id != "" && rate != "" {
-			credits[id] = rate
+		value = strings.TrimSpace(value)
+		if id != "" && value != "" {
+			credits[id] = value
 		}
 	}
 	if len(credits) == 0 {
@@ -570,7 +572,9 @@ func (c *Catalog) LoadCachedState(cached []core.CachedModel) {
 		})
 		model.Thinking = thinkingFromCached(item)
 		entry.models = append(entry.models, model)
-		if rate := core.FormatRate(item.Credits); rate != "" {
+		// 倍率在写入缓存前已由供应商归一化（cacheProbed → creditsFromProvider），
+		// 这里原样还原即可；再格式化一次会把 0.00X 之类的合法值重新解释。
+		if rate := strings.TrimSpace(item.Credits); rate != "" {
 			if entry.credits == nil {
 				entry.credits = map[string]string{}
 			}
