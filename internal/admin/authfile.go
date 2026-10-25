@@ -14,8 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"freetier2api-plugin/cpasdk/pluginabi"
-	"freetier2api-plugin/cpasdk/pluginapi"
 	"freetier2api-plugin/internal/core"
 	"freetier2api-plugin/internal/hostbridge"
 	"freetier2api-plugin/internal/logger"
@@ -36,9 +34,9 @@ func saveAuthFile(callbackID, fileName string, raw []byte) error {
 		return fmt.Errorf("凭证缺少文件名或内容")
 	}
 
-	_, errSave := hostbridge.Call(callbackID, pluginabi.MethodHostAuthSave, pluginapi.HostAuthSaveRequest{
-		Name: name, JSON: raw,
-	})
+	// hostbridge.SaveAuth 同时负责 uid 大小写归一：落盘兜底必须写同一份内容，
+	// 否则磁盘上的 uid 与宿主登记键不一致，Windows 上会多出一条重复账号。
+	aligned, errSave := hostbridge.SaveAuth(callbackID, name, raw)
 	if errSave == nil {
 		logger.Info("saved auth file %s via host.auth.save", name)
 		return nil
@@ -49,7 +47,7 @@ func saveAuthFile(callbackID, fileName string, raw []byte) error {
 		if fi, errStat := os.Stat(dir); errStat != nil || !fi.IsDir() {
 			continue
 		}
-		if errWrite := os.WriteFile(filepath.Join(dir, name), raw, 0o600); errWrite == nil {
+		if errWrite := os.WriteFile(filepath.Join(dir, name), aligned, 0o600); errWrite == nil {
 			logger.Info("saved auth file %s on disk", name)
 			return nil
 		}

@@ -165,8 +165,16 @@ func FileNameFor(vendorID, identifier string) string {
 }
 
 // FileIDFromFileName 返回凭证文件名去掉 .json 后的账号身份。
+//
+// 扩展名按大小写不敏感剥离：Windows 上用户改出来的 X.JSON 与 x.json 是同一个
+// 文件，身份里若留着扩展名，同一账号会被算成两个。
 func FileIDFromFileName(fileName string) string {
-	return strings.TrimSuffix(strings.TrimSpace(fileName), ".json")
+	trimmed := strings.TrimSpace(fileName)
+	const ext = ".json"
+	if len(trimmed) > len(ext) && strings.EqualFold(trimmed[len(trimmed)-len(ext):], ext) {
+		return trimmed[:len(trimmed)-len(ext)]
+	}
+	return trimmed
 }
 
 // SanitizeFileComponent 只保留文件名安全字符并截断。

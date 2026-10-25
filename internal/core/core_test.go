@@ -105,6 +105,26 @@ func TestFileNameForAndSanitize(t *testing.T) {
 	}
 }
 
+// TestFileIDFromFileNameTrimsExtensionCaseInsensitively 锁定扩展名大小写不敏感。
+//
+// Windows 上 x.JSON 与 x.json 是同一个文件；身份里留着扩展名会让同一账号
+// 在去重、签到记录与 uid 归一处被算成两个。
+func TestFileIDFromFileNameTrimsExtensionCaseInsensitively(t *testing.T) {
+	cases := map[string]string{
+		"zcode-AbC.json":     "zcode-AbC",
+		"zcode-AbC.JSON":     "zcode-AbC",
+		"  zcode-AbC.json  ": "zcode-AbC",
+		"zcode-AbC":          "zcode-AbC",
+		".json":              ".json",
+		"":                   "",
+	}
+	for fileName, want := range cases {
+		if got := FileIDFromFileName(fileName); got != want {
+			t.Fatalf("FileIDFromFileName(%q) = %q, want %q", fileName, got, want)
+		}
+	}
+}
+
 func TestSplitModelIDAndModelKey(t *testing.T) {
 	registry := newTestRegistry(t, &fakeVendor{Meta: Meta{VendorID: "testmodel"}})
 	if prefix, bare := registry.SplitModelID("testmodel:glm-5.2"); prefix != "testmodel" || bare != "glm-5.2" {

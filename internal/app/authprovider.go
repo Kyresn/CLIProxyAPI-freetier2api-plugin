@@ -13,15 +13,14 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"freetier2api-plugin/cpasdk/pluginabi"
 	"freetier2api-plugin/cpasdk/pluginapi"
 	"freetier2api-plugin/internal/core"
 	"freetier2api-plugin/internal/hostbridge"
 	"freetier2api-plugin/internal/logger"
-	"path/filepath"
 )
 
 const (
@@ -107,6 +106,9 @@ func buildAuthDataFor(vendor core.Vendor, credential *core.Credential, fileName 
 	if errStorage != nil {
 		return pluginapi.AuthData{}, errStorage
 	}
+	// 回给宿主的 StorageJSON 与写盘/写下一次续期必须一致：宿主要以它为准
+	// 保存时，未归一的 uid 会再次派生出第二条账号（见 hostbridge.AlignCredentialUID）。
+	storage = hostbridge.AlignCredentialUID(storage, fileName)
 	return pluginapi.AuthData{
 		Provider:    providerKey,
 		ID:          id,
@@ -703,6 +705,10 @@ func (a *App) firstVendorForRegion(region string) (core.Vendor, bool) {
 // 写两处是刻意的双保险：
 //   - host.auth.save 让宿主热更新内存注册表；
 //   - 直接写文件兜住 host.auth.save 不可用的场景。
+//
+// 两处必须写**同一份**内容：uid 大小写归一由 hostbridge.SaveAuth /
+// hostbridge.AlignCredentialUID 统一完成（见那里的说明），这里只负责
+// 选对归一的基准名，并把返回的 JSON 原样落盘。
 func (a *App) saveRefreshedCredential(ctx context.Context, callbackID string, vendor core.Vendor,
 	entry core.HostAuth, original []byte, updated *core.Credential, filePath string) {
 	payload, okPayload := refreshedStorageJSON(vendor, original, updated)
@@ -713,17 +719,17 @@ func (a *App) saveRefreshedCredential(ctx context.Context, callbackID string, ve
 	if targetPath == "" {
 		return
 	}
+	name := authWriteName(entry, targetPath)
 	if okPayload {
-		// uid 与文件名大小写对齐后再写回/上报：宿主在 Windows 上同时按文件名
-		// 与按 uid 登记凭据，历史写回曾把 uid 落成全小写，导致同一物理文件
-		// 在宿主注册表里出现大小写两条目（账号列表重复卡片）。
-		payload = alignUIDWithFileName(payload, filepath.Base(targetPath))
-		if _, errSave := hostbridge.Call(callbackID, pluginabi.MethodHostAuthSave, pluginapi.HostAuthSaveRequest{
-			Name: entry.Name,
-			JSON: payload,
-		}); errSave != nil {
+		// SaveAuth 内部做 uid 归一，返回实际写给宿主的 JSON。
+		saved, errSave := hostbridge.SaveAuth(callbackID, name, payload)
+		if errSave != nil {
 			logger.Debug("keepalive %s: host.auth.save failed: %v", entry.Name, errSave)
 		}
+		payload = saved
+	} else {
+		// 合并失败也要归一：未归一的凭证同样会被宿主按 uid 再登记一条。
+		payload = hostbridge.AlignCredentialUID(payload, name)
 	}
 	// 临时文件 + rename：凭证文件被宿主 fsnotify 监听，半写状态会让宿主读到一个
 	// 截断的 JSON。rename 在同一文件系统内是原子的，宿主只会看到旧版或新版。
@@ -738,31 +744,16 @@ func (a *App) saveRefreshedCredential(ctx context.Context, callbackID string, ve
 	}
 }
 
-// alignUIDWithFileName 把凭据 JSON 里的 uid 归一成与文件名一致的大小写。
+// authWriteName 返回 uid 归一时的基准文件名。
 //
-// 仅当 uid 与文件名（去 .json）大小写不敏感相等、但字面不一致时改写——
-// 这是宿主按 uid 派生出第二种拼写、把同一物理文件登记成两条目的场景。
-// uid 是完全不同的值（供应商自有的上游 uid）时不碰。JSON 解析失败原样
-// 返回：对齐是尽力而为，不能让写回因此失败。
-func alignUIDWithFileName(payload []byte, fileName string) []byte {
-	fileID := strings.TrimSuffix(fileName, ".json")
-	if fileID == "" {
-		return payload
+// 宿主给同一条账号两个来源：Name 是注册键，Path 是物理文件；两者大小写
+// 可能不同。注册键才是宿主用来判重的拼写，因此优先用它；Name 缺失时退回
+// 即将写入的磁盘文件名（否则归一出来的拼写谁也不认）。
+func authWriteName(entry core.HostAuth, targetPath string) string {
+	if name := strings.TrimSpace(entry.Name); name != "" {
+		return name
 	}
-	var m map[string]any
-	if errUnmarshal := json.Unmarshal(payload, &m); errUnmarshal != nil {
-		return payload
-	}
-	current, _ := m["uid"].(string)
-	if current == "" || current == fileID || !strings.EqualFold(current, fileID) {
-		return payload
-	}
-	m["uid"] = fileID
-	encoded, errMarshal := json.Marshal(m)
-	if errMarshal != nil {
-		return payload
-	}
-	return encoded
+	return filepath.Base(targetPath)
 }
 
 // refreshedStorageJSON 用供应商自己的合并逻辑更新凭证 JSON。
