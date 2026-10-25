@@ -246,7 +246,7 @@ func LoginPoll(ctx context.Context, logins core.LoginSessions, state string, bas
 
 	// 探测用户真实 ID 与 Agent ID
 	_, _, _, _ = fetchUserInfo(ctx, cred, baseURLOverride)
-	_ = prepare(ctx, cred, baseURLOverride)
+	_ = prepare(ctx, cred, baseURLOverride, nil)
 
 	storageJSON, errStorage := cred.StorageJSON()
 	if errStorage != nil {

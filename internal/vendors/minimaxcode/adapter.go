@@ -15,6 +15,9 @@ type adapter struct {
 	*core.NativeAdapter[*Credential]
 	region  Region
 	baseURL string
+	// workspace 是账号工作区模型目录缓存。挂在实例上而不是包级变量：
+	// 同进程的多个 App 实例各自独立，缓存生命周期跟着实例走。
+	workspace workspaceCache
 }
 
 // Instances 构造两个区域实例。
@@ -90,47 +93,25 @@ func (v *adapter) Match(fileName, provider string, raw map[string]any) bool {
 
 // ---- 模型 ----
 
-// ModelsForAuth 返回该账号工作区当前可用的模型清单。
+// ModelsForAuth 返回本区域「内置目录 ∪ 账号工作区」的模型清单。
 //
-// /config 是权威来源（上游会改名/下线模型，内置目录是编译期固化的兜底）：
-// 实测 2026-10-25 订阅工作区的 M3.1-Flash 已从 MiniMax-M3.1-Flash-Preview
-// 更名为 MiniMax-M3.1-Flash，沿用内置 ID 会被 Agent 会话以 1406010011
-// "explicit model is not registered" 拒绝。对外 ID 统一小写（与既有清单
-// 命名一致），工作区未声明 thinking 支持的模型不带推理档位。
+// 内置目录是注册表骨架：它带完整的上下文/输出/工具元数据，以及插件侧
+// 构造的 -thinking 变体 ID。工作区 /config 是上游当前可用模型的权威来源，
+// 但只用来补充内置目录里没有的新模型——整体替换会让既有 ID（尤其
+// -thinking）与元数据消失，造成兼容性回归。
+//
+// 拉取失败时只用内置目录：宁可给旧 ID 也不给空清单（空清单会让宿主
+// 淘汰凭证，而旧 ID 至多在对话时报错）。
 func (v *adapter) ModelsForAuth(ctx context.Context, cred *core.Credential) ([]pluginapi.ModelInfo, error) {
+	static, errStatic := v.StaticModels(ctx)
+	if errStatic != nil {
+		return nil, errStatic
+	}
 	native, errNative := v.Native(cred)
 	if errNative != nil {
-		return nil, errNative
+		return static, nil
 	}
-	models, errFetch := fetchWorkspaceModels(ctx, native, v.baseURL)
-	if errFetch != nil || len(models) == 0 {
-		// 拉取失败回落静态清单：宁可给旧 ID 也不给空清单（空清单会让宿主
-		// 淘汰凭证，而旧 ID 至多在对话时报错）。
-		return v.StaticModels(ctx)
-	}
-	out := make([]pluginapi.ModelInfo, 0, len(models))
-	for _, item := range models {
-		external := strings.ToLower(item.ModelID)
-		info := pluginapi.ModelInfo{
-			ID:            external,
-			Name:          core.FirstNonEmpty(item.DisplayName, external),
-			DisplayName:   core.FirstNonEmpty(item.DisplayName, external),
-			ContextLength: item.ContextLimit,
-		}
-		if workspaceSupportsVariant(item, "thinking") && len(item.Efforts) > 0 {
-			levels := make([]string, 0, len(item.Efforts))
-			for _, effort := range item.Efforts {
-				if effort != "" && effort != "default" {
-					levels = append(levels, effort)
-				}
-			}
-			if len(levels) > 0 {
-				info.Thinking = &pluginapi.ThinkingSupport{Levels: levels}
-			}
-		}
-		out = append(out, info)
-	}
-	return out, nil
+	return mergeWorkspaceModels(static, v.workspace.models(ctx, native, v.baseURL)), nil
 }
 
 // StaticModels 返回本区域的模型清单。
@@ -168,7 +149,7 @@ func (v *adapter) Execute(ctx context.Context, cred *core.Credential, req *core.
 	if errNative != nil {
 		return nil, errNative
 	}
-	payload, errChat := Chat(ctx, native, req, v.baseURL)
+	payload, errChat := chat(ctx, native, req, v.baseURL, &v.workspace)
 	if errChat != nil {
 		return nil, errChat
 	}
@@ -184,9 +165,9 @@ func (v *adapter) ExecuteStream(ctx context.Context, cred *core.Credential, req 
 	if errNative != nil {
 		return errNative
 	}
-	errStream := ChatStream(ctx, native, req, v.baseURL, func(chunk []byte) error {
+	errStream := chatStream(ctx, native, req, v.baseURL, func(chunk []byte) error {
 		return sink.Emit(chunk)
-	})
+	}, &v.workspace)
 	if errStream != nil {
 		return errStream
 	}
@@ -230,8 +211,8 @@ func (v *adapter) SupportsCheckin() bool { return v.region == RegionGlobal }
 // ConfigFields 声明 MiniMax Code 专属配置。
 func (v *adapter) ConfigFields() []pluginapi.ConfigField {
 	return []pluginapi.ConfigField{
-		{Name: "minimaxcode_cn_base_url", Type: pluginapi.ConfigFieldTypeString, Description: "国内版上游基地址覆盖。"},
-		{Name: "minimaxcode_global_base_url", Type: pluginapi.ConfigFieldTypeString, Description: "国际版上游基地址覆盖。"},
+		{Name: "minimaxcode_cn_base_url", Type: pluginapi.ConfigFieldTypeString, Description: "国内版 Agent 域基地址覆盖（Token Plan 窗口查询固定直连开放平台域）。"},
+		{Name: "minimaxcode_global_base_url", Type: pluginapi.ConfigFieldTypeString, Description: "国际版 Agent 域基地址覆盖（Token Plan 窗口查询固定直连开放平台域）。"},
 	}
 }
 
@@ -243,4 +224,5 @@ var (
 	_ core.ConfigFieldsProvider = (*adapter)(nil)
 	_ core.LoginProvider        = (*adapter)(nil)
 	_ core.QuotaProvider        = (*adapter)(nil)
+	_ core.ModelsProvider       = (*adapter)(nil)
 )

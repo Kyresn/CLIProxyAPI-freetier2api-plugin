@@ -216,13 +216,18 @@ func normalizeFinishReason(reason string) string {
 
 // Chat 执行一次非流式对话。
 func Chat(ctx context.Context, cred *Credential, req *core.ExecuteRequest, baseURLOverride string) ([]byte, error) {
+	return chat(ctx, cred, req, baseURLOverride, nil)
+}
+
+// chat 是 Chat 的实现；workspace 为 nil 时不使用账号级目录缓存。
+func chat(ctx context.Context, cred *Credential, req *core.ExecuteRequest, baseURLOverride string, workspace *workspaceCache) ([]byte, error) {
 	var cp chatPayload
 	if len(req.Payload) > 0 {
 		_ = json.Unmarshal(req.Payload, &cp)
 	}
 	toolsEnabled := cp.toolsEnabled()
 
-	respBody, modelName, promptTokens, errDo := doMessageRequest(ctx, cred, req, baseURLOverride)
+	respBody, modelName, promptTokens, errDo := doMessageRequest(ctx, cred, req, baseURLOverride, workspace)
 	if errDo != nil {
 		return nil, errDo
 	}
@@ -319,13 +324,18 @@ func Chat(ctx context.Context, cred *Credential, req *core.ExecuteRequest, baseU
 
 // ChatStream 执行一次流式对话，分片通过 onChunk 回调发射。
 func ChatStream(ctx context.Context, cred *Credential, req *core.ExecuteRequest, baseURLOverride string, onChunk func([]byte) error) error {
+	return chatStream(ctx, cred, req, baseURLOverride, onChunk, nil)
+}
+
+// chatStream 是 ChatStream 的实现；workspace 为 nil 时不使用账号级目录缓存。
+func chatStream(ctx context.Context, cred *Credential, req *core.ExecuteRequest, baseURLOverride string, onChunk func([]byte) error, workspace *workspaceCache) error {
 	var cp chatPayload
 	if len(req.Payload) > 0 {
 		_ = json.Unmarshal(req.Payload, &cp)
 	}
 	toolsEnabled := cp.toolsEnabled()
 
-	respBody, modelName, _, errDo := doMessageRequest(ctx, cred, req, baseURLOverride)
+	respBody, modelName, _, errDo := doMessageRequest(ctx, cred, req, baseURLOverride, workspace)
 	if errDo != nil {
 		return errDo
 	}
@@ -498,7 +508,7 @@ func ChatStream(ctx context.Context, cred *Credential, req *core.ExecuteRequest,
 	return onChunk(finalBytes)
 }
 
-func doMessageRequest(ctx context.Context, cred *Credential, req *core.ExecuteRequest, baseURLOverride string) (io.ReadCloser, string, int, error) {
+func doMessageRequest(ctx context.Context, cred *Credential, req *core.ExecuteRequest, baseURLOverride string, workspace *workspaceCache) (io.ReadCloser, string, int, error) {
 	var cp chatPayload
 	if len(req.Payload) > 0 {
 		_ = json.Unmarshal(req.Payload, &cp)
@@ -511,7 +521,7 @@ func doMessageRequest(ctx context.Context, cred *Credential, req *core.ExecuteRe
 	modelCfg, _ := findModel(modelID)
 	// 工作区解析：上游会改名/下线模型（内置目录是编译期固化的），
 	// 以账号工作区 /config 列出的 model_id 为准，未命中回落内置值。
-	if upstreamID, wsVariant, ok := resolveWorkspaceModel(ctx, cred, baseURLOverride, modelID, modelCfg); ok {
+	if upstreamID, wsVariant, ok := resolveWorkspaceModel(ctx, workspace, cred, baseURLOverride, modelID, modelCfg); ok {
 		modelCfg.UpstreamModel = upstreamID
 		modelCfg.Variant = wsVariant
 	}
@@ -529,7 +539,7 @@ func doMessageRequest(ctx context.Context, cred *Credential, req *core.ExecuteRe
 	}
 	promptTokens := EstimateTokens(prompt)
 
-	sessionID, errSession := createSession(ctx, cred, baseURLOverride)
+	sessionID, errSession := createSession(ctx, cred, baseURLOverride, workspace)
 	if errSession != nil {
 		return nil, "", 0, fmt.Errorf("create minimax session: %w", errSession)
 	}
@@ -964,14 +974,15 @@ func fetchAgents(ctx context.Context, cred *Credential, baseURLOverride string) 
 }
 
 // prepare 执行 Agent 启动握手（/config、/agent、/channel/connections）。
-func prepare(ctx context.Context, cred *Credential, baseURLOverride string) error {
+//
+// 第 1 步复用工作区目录缓存：本实例近期刚拉过同一个 /config 时不再重复
+// 请求（含失败冷却，避免上游抖动时每条消息多付一次超时）。workspace 为
+// nil（登录/签到这类一次性流程）时只做一次拉取，结果不参与展示。
+func prepare(ctx context.Context, cred *Credential, baseURLOverride string, workspace *workspaceCache) error {
 	base := AgentHostFor(cred.Region, baseURLOverride)
 
 	// 1. /config 接口
-	targetCfg := buildAgentTarget(cred, base, EpConfig, http.MethodGet, "", false)
-	if resp, err := doRequest(ctx, cred, targetCfg, base, 20*time.Second); err == nil {
-		_ = resp.Body.Close()
-	}
+	_ = workspace.models(ctx, cred, baseURLOverride)
 
 	// 2. /agent 列表解析
 	if cred.AgentID == "" {
@@ -990,12 +1001,12 @@ func prepare(ctx context.Context, cred *Credential, baseURLOverride string) erro
 }
 
 // createSession 打开一个独立的对话 session。
-func createSession(ctx context.Context, cred *Credential, baseURLOverride string) (string, error) {
+func createSession(ctx context.Context, cred *Credential, baseURLOverride string, workspace *workspaceCache) (string, error) {
 	if cred.UserID == "" {
 		_, _, _, _ = fetchUserInfo(ctx, cred, baseURLOverride)
 	}
 	if cred.AgentID == "" {
-		_ = prepare(ctx, cred, baseURLOverride)
+		_ = prepare(ctx, cred, baseURLOverride, workspace)
 	}
 	if cred.AgentID == "" {
 		return "", fmt.Errorf("minimax agent_id is unknown and could not be discovered")
@@ -1125,15 +1136,15 @@ const (
 	AccountHostCN = "https://account.minimax.cn"
 	AgentHostCN   = "https://agent.minimaxi.com"
 	StreamHostCN  = "https://agent-stream.minimaxi.com"
+	// 开放平台域：coding_plan/remains（Token Plan 窗口）挂在这里，
+	// 与签名的 account 域分离，纯 Bearer 即可访问。
+	PlatformHostCN = "https://www.minimaxi.com"
 
 	// 国际版 (Global)
-	AccountHostGlobal = "https://account.minimax.io"
-	AgentHostGlobal   = "https://agent.minimax.io"
-	// PlatformHost 是开放平台域：coding_plan/remains（Token Plan 窗口）挂在这里，
-	// 与签名的 account 域分离，纯 Bearer 即可访问。
-	PlatformHostCN     = "https://www.minimaxi.com"
-	PlatformHostGlobal = "https://platform.minimax.io"
+	AccountHostGlobal  = "https://account.minimax.io"
+	AgentHostGlobal    = "https://agent.minimax.io"
 	StreamHostGlobal   = "https://agent-stream.minimax.io"
+	PlatformHostGlobal = "https://platform.minimax.io"
 
 	// OAuth2 设备码配置（与桌面客户端对齐）
 	ClientID         = "mcode-public"
@@ -1162,7 +1173,9 @@ const (
 	EpCheckinStatus = "/minimax-cloud/api/v1/signin/status"
 	EpCheckinClaim  = "/minimax-cloud/api/v1/signin/claim"
 	EpMembership    = "/matrix/api/v1/commerce/get_membership_info"
-	EpCreditDetails = "/minimax-cloud/api/v1/credit/details"
+	// EpCodingPlanRemains 是 Token Plan 的 5 小时 / 7 天窗口余量（平台域）。
+	EpCodingPlanRemains = "/v1/api/openplatform/coding_plan/remains"
+	EpCreditDetails     = "/minimax-cloud/api/v1/credit/details"
 )
 
 // VendorIDFor 返回某区域对应的 VendorID。
@@ -1189,15 +1202,7 @@ func AccountHostFor(r Region) string {
 	return AccountHostGlobal
 }
 
-// AgentHostFor 返回 Agent 业务基础地址。
-// PlatformHostFor 返回该区域的开放平台域。
-func PlatformHostFor(r Region) string {
-	if r == RegionCN {
-		return PlatformHostCN
-	}
-	return PlatformHostGlobal
-}
-
+// AgentHostFor 返回 Agent 业务基础地址（配置可覆盖）。
 func AgentHostFor(r Region, override string) string {
 	if trimmed := strings.TrimRight(strings.TrimSpace(override), "/"); trimmed != "" {
 		return trimmed
@@ -1206,6 +1211,17 @@ func AgentHostFor(r Region, override string) string {
 		return AgentHostCN
 	}
 	return AgentHostGlobal
+}
+
+// PlatformHostFor 返回该区域的开放平台域（Token Plan 窗口查询用）。
+//
+// 不参与 <vendorid>_base_url 覆盖：agent 镜像不一定托管开放平台接口，
+// 把镜像地址套过来只会让窗口恒缺失。
+func PlatformHostFor(r Region) string {
+	if r == RegionCN {
+		return PlatformHostCN
+	}
+	return PlatformHostGlobal
 }
 
 // StreamHostFor 返回流式对话消息基础地址。
