@@ -171,6 +171,13 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # actions/checkout 按 commit 检出 tag（fetch-tags 默认 false），本地的
+          # refs/tags/<tag> 是**轻量标签**：%(contents) 只会拿到 commit 标题，
+          # 「本版要点」因此一直是空的（v0.1.18 起就这样）。显式取回注解对象。
+          git fetch --force --no-tags origin "+refs/tags/${TAG}:refs/tags/${TAG}"
+          if [ "$(git cat-file -t "refs/tags/${TAG}")" != "tag" ]; then
+            echo "::warning::${TAG} 不是注解标签，本版要点只会有 commit 标题"
+          fi
           {
             echo '## 通过 CPA 插件商店安装（推荐）'
             echo
@@ -195,8 +202,8 @@ jobs:
             echo
             echo '## 本版要点'
             echo
-            # tag 注解作为本版要点；首行为空时去掉。
-            git tag -l --format='%(contents)' "$TAG" | sed '1{/^$/d}'
+            # tag 注解作为本版要点；首行为空时去掉（sed 用 -e 拆写，BSD/GNU 都认）。
+            git tag -l --format='%(contents)' "$TAG" | sed -e '1{' -e '/^$/d' -e '}'
           } > release-notes.md
           cat release-notes.md
 
