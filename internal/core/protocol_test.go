@@ -23,8 +23,8 @@ func TestModelInfoDeclaresToolsOnlyWhenSupported(t *testing.T) {
 		}
 	}
 	// 字面量钉死：常量若被改名/改值，这里的期望不能跟着一起变，否则测试形同虚设。
-	if !slices.Equal(ToolParameters, []string{"tools", "tool_choice"}) {
-		t.Fatalf("ToolParameters = %#v", ToolParameters)
+	if !slices.Equal(ToolParameters(), []string{"tools", "tool_choice"}) {
+		t.Fatalf("ToolParameters() = %#v", ToolParameters())
 	}
 	for _, param := range []string{"tools", "tool_choice"} {
 		if !slices.Contains(withTools.SupportedParameters, param) {

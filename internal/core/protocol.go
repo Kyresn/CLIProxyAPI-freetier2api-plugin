@@ -6,11 +6,17 @@ import (
 	"freetier2api-plugin/cpasdk/pluginapi"
 )
 
-// ToolParameters 是声明「支持工具调用」时必须一并列出的参数。
+// ToolParameters 返回声明「支持工具调用」时必须一并列出的参数。
 //
 // 注册转换与 admin 的合并/回灌路径共用这一份，避免字面量散落后再出现
 // 「方法声明了 tool_calls、参数却没有 tools」这种自相矛盾。
-var ToolParameters = []string{"tools", "tool_choice"}
+//
+// 返回新建切片而不是包级变量：包级可变状态会被任意调用方改写，而这份清单
+// 是所有供应商共享的声明源头。调用频次是「每次目录刷新 × 每个模型」，
+// 两次元素的分配可以忽略。
+func ToolParameters() []string {
+	return []string{"tools", "tool_choice"}
+}
 
 // ModelInfoToPluginAPI 把中立的模型描述转成宿主契约类型。
 //
@@ -44,7 +50,7 @@ func ModelInfoToPluginAPI(vendorID string, info ModelDescriptor) pluginapi.Model
 	}
 	if info.SupportsTools {
 		out.SupportedGenerationMethods = append(out.SupportedGenerationMethods, "tool_calls")
-		out.SupportedParameters = append(out.SupportedParameters, ToolParameters...)
+		out.SupportedParameters = append(out.SupportedParameters, ToolParameters()...)
 	}
 	if len(info.Efforts) > 0 || info.DefaultEffort != "" {
 		out.Thinking = &pluginapi.ThinkingSupport{

@@ -990,7 +990,7 @@ func MergeSameNameModels(models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
 		// 隐藏工具开关，实际支持工具的模型反而丢了能力。
 		if core.ModelSupportsTools(*target) || core.ModelSupportsTools(model) {
 			target.SupportedGenerationMethods = appendUnique(target.SupportedGenerationMethods, "tool_calls")
-			for _, param := range core.ToolParameters {
+			for _, param := range core.ToolParameters() {
 				target.SupportedParameters = appendUnique(target.SupportedParameters, param)
 			}
 		}
