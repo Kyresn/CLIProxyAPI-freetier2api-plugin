@@ -262,21 +262,21 @@ func balanceQuota(body map[string]any) ([]pluginapi.QuotaMetric, []pluginapi.Quo
 			})
 		}
 
+		// 比例口径与 qoder 一致：有总额按比例，总额缺失但仍有余额时
+		// 视为满额（上游只给余额时不能画成 0%，那是「已用尽」的假象）。
 		fraction := 0.0
-		if total > 0 {
-			fraction = remaining / total
-			if fraction < 0 {
-				fraction = 0
-			} else if fraction > 1 {
-				fraction = 1
-			}
+		switch {
+		case total > 0:
+			fraction = core.ClampFraction(remaining / total)
+		case remaining > 0:
+			fraction = 1
 		}
 		bucket := pluginapi.QuotaBucket{
 			Window:            name,
 			RemainingFraction: fraction,
 			Description:       fmt.Sprintf("已用 %s / 共 %s tokens", formatTokens(used), formatTokens(total)),
 		}
-		if expires := int64(floatField(entry, "expires_at")); expires > 0 {
+		if expires := core.GetUnixSeconds(entry, "expires_at"); expires > 0 {
 			// ResetTime 的既定语义是「重置时间」，而 one_time 礼包不重置、
 			// 到期即失效——这里按桶粒度放 expires_at 供「失效」参考，
 			// 套餐级的到期展示见 planExpiryGroup（走 Description）。
@@ -310,17 +310,14 @@ func balanceQuota(body map[string]any) ([]pluginapi.QuotaMetric, []pluginapi.Quo
 func planExpiryGroup(plans []map[string]any, serverTime int64) *pluginapi.QuotaGroup {
 	nearest := int64(0)
 	for _, plan := range activePlans(plans, serverTime) {
-		if ends := int64(floatField(plan, "ends_at")); ends > 0 && (nearest == 0 || ends < nearest) {
+		if ends := core.GetUnixSeconds(plan, "ends_at"); ends > 0 && (nearest == 0 || ends < nearest) {
 			nearest = ends
 		}
 	}
 	if nearest == 0 {
 		return nil
 	}
-	return &pluginapi.QuotaGroup{DisplayName: "套餐有效期", Buckets: []pluginapi.QuotaBucket{{
-		Window:      "有效期",
-		Description: "套餐到期 " + time.Unix(nearest, 0).UTC().Format(time.RFC3339),
-	}}}
+	return core.QuotaExpiryGroup(time.Unix(nearest, 0))
 }
 
 // activePlans 返回仍生效的套餐条目（原样引用，不拷贝）。
@@ -336,7 +333,7 @@ func activePlans(plans []map[string]any, serverTime int64) []map[string]any {
 		if status != "" && status != "active" {
 			continue
 		}
-		if endsAt := floatField(entry, "ends_at"); endsAt > 0 && serverTime > 0 && endsAt <= float64(serverTime) {
+		if endsAt := core.GetUnixSeconds(entry, "ends_at"); endsAt > 0 && serverTime > 0 && endsAt <= serverTime {
 			continue
 		}
 		out = append(out, entry)

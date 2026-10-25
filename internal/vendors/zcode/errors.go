@@ -29,6 +29,9 @@ const (
 	codeDailyQuota      = 1005 // 每日额度用完（额度耗尽的判定依据之一）
 	codeMaxTokens       = 1210 // max_tokens 超出 [1,131072]
 	codeUnusualActivity = 3012 // 风控「unusual activity」
+
+	// quotaBucketExhaustedPhrase 是 model_usage 桶耗尽的文案标记（实测）。
+	quotaBucketExhaustedPhrase = "exceed quota limit"
 )
 
 // Classify 把上游响应翻译成共享的上游错误类型。
@@ -51,6 +54,7 @@ func Classify(status int, body string) *core.Failure {
 
 	msg := core.FirstNonEmpty(payload.Msg, payload.Error.Message, textPreview(body))
 	lower := strings.ToLower(body)
+	lowerMsg := strings.ToLower(msg)
 
 	switch {
 	// 1) 验证码挑战（Plan 通道）：403 + captcha 文案，或 400 + code=3007
@@ -81,7 +85,10 @@ func Classify(status int, body string) *core.Failure {
 	//      **账号内单模型**额度耗尽（如活动礼包的 GLM-5.3 用完而 Flash 尚有
 	//      余量）。按（账号, 模型）避让而不是整个账号冷却——否则同一账号里
 	//      还有余量的模型会被连坐封掉。
-	case payload.Code == codeDailyQuota && strings.Contains(lower, "exceed quota limit"):
+	//      402 是账号级欠费信号，优先级高于单模型桶（见分支 4）；只在 msg 上
+	//      匹配短语，避免正文里的无关内容误命中。
+	case payload.Code == codeDailyQuota && status != http.StatusPaymentRequired &&
+		strings.Contains(lowerMsg, quotaBucketExhaustedPhrase):
 		return &core.Failure{
 			Kind:   core.FailureKindModelBlocked,
 			Status: pickStatus(status, http.StatusBadRequest),
@@ -112,7 +119,7 @@ func Classify(status int, body string) *core.Failure {
 	case payload.Code == codeModelNotAllowed:
 		return &core.Failure{
 			Kind:   core.FailureKindModelBlocked,
-			Status: status,
+			Status: pickStatus(status, http.StatusBadRequest),
 			Msg:    core.FirstNonEmpty(msg, "该账号套餐不包含此模型"),
 		}
 

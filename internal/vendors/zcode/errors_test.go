@@ -81,3 +81,38 @@ func TestClassifyAccountLevelQuotaStillHardCredit(t *testing.T) {
 		}
 	}
 }
+
+// TestClassifyModelBucketExhaustedPriority 锁死模型桶耗尽的分类优先级：
+// 402 是账号级欠费，不能被单模型桶抢走；403 仍是凭证失效；429 才按模型避让。
+func TestClassifyModelBucketExhaustedPriority(t *testing.T) {
+	body := `{"code":1005,"msg":"exceed quota limit","logid":"x"}`
+	cases := []struct {
+		name   string
+		status int
+		kind   core.FailureKind
+		http   int
+	}{
+		{"payment_required_wins", http.StatusPaymentRequired, core.FailureKindHardCredit, http.StatusPaymentRequired},
+		{"forbidden_is_session_dead", http.StatusForbidden, core.FailureKindSessionDead, http.StatusForbidden},
+		{"too_many_requests_is_model_blocked", http.StatusTooManyRequests, core.FailureKindModelBlocked, http.StatusTooManyRequests},
+	}
+	for _, testCase := range cases {
+		failure := Classify(testCase.status, body)
+		if failure.Kind != testCase.kind || failure.HTTPStatus() != testCase.http {
+			t.Fatalf("%s: kind=%v status=%d, want kind=%v status=%d",
+				testCase.name, failure.Kind, failure.HTTPStatus(), testCase.kind, testCase.http)
+		}
+	}
+}
+
+// TestClassifyModelNotAllowedStatus 验证 200 信封里的 3006 换成语义状态码，
+// 而不是把 200 当成错误的 HTTP 码透传给宿主。
+func TestClassifyModelNotAllowedStatus(t *testing.T) {
+	failure := Classify(http.StatusOK, `{"code":3006,"msg":"model not allowed"}`)
+	if failure.Kind != core.FailureKindModelBlocked {
+		t.Fatalf("kind = %v, want ModelBlocked", failure.Kind)
+	}
+	if failure.HTTPStatus() != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", failure.HTTPStatus())
+	}
+}
