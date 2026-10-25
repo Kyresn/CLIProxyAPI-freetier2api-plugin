@@ -21,6 +21,7 @@ import (
 	"freetier2api-plugin/internal/core"
 	"freetier2api-plugin/internal/hostbridge"
 	"freetier2api-plugin/internal/logger"
+	"path/filepath"
 )
 
 const (
@@ -705,20 +706,24 @@ func (a *App) firstVendorForRegion(region string) (core.Vendor, bool) {
 func (a *App) saveRefreshedCredential(ctx context.Context, callbackID string, vendor core.Vendor,
 	entry core.HostAuth, original []byte, updated *core.Credential, filePath string) {
 	payload, okPayload := refreshedStorageJSON(vendor, original, updated)
-	if okPayload {
-		if _, errSave := hostbridge.Call(callbackID, pluginabi.MethodHostAuthSave, pluginapi.HostAuthSaveRequest{
-			Name: entry.Name,
-			JSON: payload,
-		}); errSave != nil {
-			logger.Debug("keepalive %s: host.auth.save failed: %v", entry.Name, errSave)
-		}
-	}
 	targetPath := filePath
 	if targetPath == "" {
 		targetPath = entry.Path
 	}
 	if targetPath == "" {
 		return
+	}
+	if okPayload {
+		// uid 与文件名大小写对齐后再写回/上报：宿主在 Windows 上同时按文件名
+		// 与按 uid 登记凭据，历史写回曾把 uid 落成全小写，导致同一物理文件
+		// 在宿主注册表里出现大小写两条目（账号列表重复卡片）。
+		payload = alignUIDWithFileName(payload, filepath.Base(targetPath))
+		if _, errSave := hostbridge.Call(callbackID, pluginabi.MethodHostAuthSave, pluginapi.HostAuthSaveRequest{
+			Name: entry.Name,
+			JSON: payload,
+		}); errSave != nil {
+			logger.Debug("keepalive %s: host.auth.save failed: %v", entry.Name, errSave)
+		}
 	}
 	// 临时文件 + rename：凭证文件被宿主 fsnotify 监听，半写状态会让宿主读到一个
 	// 截断的 JSON。rename 在同一文件系统内是原子的，宿主只会看到旧版或新版。
@@ -731,6 +736,33 @@ func (a *App) saveRefreshedCredential(ctx context.Context, callbackID string, ve
 		_ = os.Remove(tmp)
 		logger.Debug("keepalive %s: replace credential file failed: %v", entry.Name, errRename)
 	}
+}
+
+// alignUIDWithFileName 把凭据 JSON 里的 uid 归一成与文件名一致的大小写。
+//
+// 仅当 uid 与文件名（去 .json）大小写不敏感相等、但字面不一致时改写——
+// 这是宿主按 uid 派生出第二种拼写、把同一物理文件登记成两条目的场景。
+// uid 是完全不同的值（供应商自有的上游 uid）时不碰。JSON 解析失败原样
+// 返回：对齐是尽力而为，不能让写回因此失败。
+func alignUIDWithFileName(payload []byte, fileName string) []byte {
+	fileID := strings.TrimSuffix(fileName, ".json")
+	if fileID == "" {
+		return payload
+	}
+	var m map[string]any
+	if errUnmarshal := json.Unmarshal(payload, &m); errUnmarshal != nil {
+		return payload
+	}
+	current, _ := m["uid"].(string)
+	if current == "" || current == fileID || !strings.EqualFold(current, fileID) {
+		return payload
+	}
+	m["uid"] = fileID
+	encoded, errMarshal := json.Marshal(m)
+	if errMarshal != nil {
+		return payload
+	}
+	return encoded
 }
 
 // refreshedStorageJSON 用供应商自己的合并逻辑更新凭证 JSON。
