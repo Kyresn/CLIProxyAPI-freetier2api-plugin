@@ -28,6 +28,7 @@ import (
 //   - not_found：上游偶发 404 → 固定短冷却，不累计熔断。
 //   - server：上游 5xx → 计入熔断。
 //   - content_blocked：内容策略拦截 → 不罚账号，可降级重试。
+//   - channel_rejected：渠道校验拦截（11128）→ 请求级，不罚号、不换号，保留上游说明。
 //   - bad_params：参数非法 → 不罚账号，但仍换号重试。
 //   - account_fault：账号级故障（request illegal / trial 未激活）→ 冷却轮换。
 //   - model_blocked：该后端无此模型（11102）→ 按（账号, 模型）避让。
@@ -53,10 +54,10 @@ var (
 	accountFaultMarkers = []string{
 		"request illegal", "trial not activated", "trial version is not yet activated",
 	}
-	contentBlockedMarkers = []string{
-		"blocked by security policy", "unapproved channel", "illegal api invocation",
-	}
-	invalidImageMarkers = []string{
+	contentBlockedMarkers = []string{"blocked by security policy"}
+	// channelRejectedMarkers 是渠道校验失败（11128）的文案：说明请求不是官方客户端发出的。
+	channelRejectedMarkers = []string{"unapproved channel", "illegal api invocation"}
+	invalidImageMarkers    = []string{
 		"invalid image_url content", "invalid_image_data", "replace the image",
 	}
 	promptTooLongMarkers = []string{
@@ -72,6 +73,8 @@ const (
 	modelRateLimitCode = "6004"
 	// modelBlockCode 是「该后端无此模型」。
 	modelBlockCode = "11102"
+	// channelRejectedCode 是渠道校验失败（非官方客户端）。
+	channelRejectedCode = "11128"
 
 	// ModelBlockReason 是（账号, 模型）避让的固定原因串。
 	ModelBlockReason = "11102 model not available"
@@ -96,8 +99,8 @@ var (
 //   - 429 必须早于 hardMarkers：429 的正文高频携带 "quota exceeded"/"额度不足"
 //     这类跨计费与限流两界的措辞，hardMarkers 先判会把限流误归余额耗尽，
 //     白扔一个号约 12 小时。真正的余额耗尽由 402 或业务码 14018 捕获；
-//   - 11115（上下文超限）必须早于 404/5xx/WAF/内容策略：它是请求级错误，
-//     罚账号是错的；
+//   - 11115（上下文超限）与 11128（渠道校验）必须早于 404/5xx/WAF/内容策略：
+//     它们是请求级错误，罚账号是错的；
 //   - accountFault 必须早于 429：账号被封的措辞里也可能带限流字样。
 func Classify(status int, body string) *core.Failure {
 	lower := strings.ToLower(body)
@@ -106,6 +109,13 @@ func Classify(status int, body string) *core.Failure {
 	// 否则 "11102" 撞在 requestId 上会误避让一个可用模型。
 	if isModelBlocked(status, body) {
 		return &core.Failure{Kind: core.FailureKindModelBlocked, Status: status, Msg: body}
+	}
+	// 渠道校验失败（11128）：上游常把它包在 HTTP 500 里返回，但它是请求级拒绝。
+	// 按 5xx 处理会让宿主把全部账号当服务端故障冷却，后续重试退化成
+	// 503 auth_unavailable（只剩数字码，可读说明丢失）。这里改写成 400 并保留原文。
+	if codeMarker(lower, channelRejectedCode) || core.ContainsAny(lower, channelRejectedMarkers) {
+		return &core.Failure{Kind: core.FailureKindChannelRejected, Status: http.StatusBadRequest,
+			Code: channelRejectedCode, Msg: body}
 	}
 	// 1) 余额耗尽（明确的 402）。
 	if status == http.StatusPaymentRequired {

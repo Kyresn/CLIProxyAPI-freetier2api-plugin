@@ -161,20 +161,21 @@ func ErrorEnvelopeFromError(err error) []byte {
 type FailureKind string
 
 const (
-	FailureKindNone           FailureKind = "none"
-	FailureKindHardCredit     FailureKind = "hard_credit"
-	FailureKindSoftRate       FailureKind = "soft_rate"
-	FailureKindSessionDead    FailureKind = "session_dead"
-	FailureKindNotFound       FailureKind = "not_found"
-	FailureKindServer         FailureKind = "server"
-	FailureKindContentBlocked FailureKind = "content_blocked"
-	FailureKindBadParams      FailureKind = "bad_params"
-	FailureKindAccountFault   FailureKind = "account_fault"
-	FailureKindModelBlocked   FailureKind = "model_blocked"
-	FailureKindWAFBlock       FailureKind = "waf_block"
-	FailureKindPromptTooLong  FailureKind = "prompt_too_long"
-	FailureKindImageInvalid   FailureKind = "image_invalid"
-	FailureKindClient         FailureKind = "client"
+	FailureKindNone            FailureKind = "none"
+	FailureKindHardCredit      FailureKind = "hard_credit"
+	FailureKindSoftRate        FailureKind = "soft_rate"
+	FailureKindSessionDead     FailureKind = "session_dead"
+	FailureKindNotFound        FailureKind = "not_found"
+	FailureKindServer          FailureKind = "server"
+	FailureKindContentBlocked  FailureKind = "content_blocked"
+	FailureKindChannelRejected FailureKind = "channel_rejected"
+	FailureKindBadParams       FailureKind = "bad_params"
+	FailureKindAccountFault    FailureKind = "account_fault"
+	FailureKindModelBlocked    FailureKind = "model_blocked"
+	FailureKindWAFBlock        FailureKind = "waf_block"
+	FailureKindPromptTooLong   FailureKind = "prompt_too_long"
+	FailureKindImageInvalid    FailureKind = "image_invalid"
+	FailureKindClient          FailureKind = "client"
 
 	// 兼容通用供应商的短分类。
 	FailureKindCredential FailureKind = "credential"
@@ -259,8 +260,8 @@ func (e *Failure) Retryable() bool {
 		return *e.RetryableOverride
 	}
 	switch e.Kind {
-	case FailureKindContentBlocked, FailureKindPromptTooLong, FailureKindImageInvalid, FailureKindBadParams,
-		FailureKindClient, FailureKindCredential:
+	case FailureKindContentBlocked, FailureKindChannelRejected, FailureKindPromptTooLong,
+		FailureKindImageInvalid, FailureKindBadParams, FailureKindClient, FailureKindCredential:
 		return false
 	default:
 		return true

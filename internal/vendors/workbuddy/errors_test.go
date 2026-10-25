@@ -2,6 +2,7 @@ package workbuddy
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,6 +42,11 @@ func TestClassifyOrderingMatters(t *testing.T) {
 		{"image invalid", 400, `{"code":11135,"msg":"invalid_image_data"}`, core.FailureKindImageInvalid},
 		// 内容策略拦截。
 		{"content blocked", 400, `{"msg":"blocked by security policy"}`, core.FailureKindContentBlocked},
+		// 渠道校验失败：上游会包在 HTTP 500 里，仍必须按请求级拒绝处理。
+		{"channel rejected on 500", 500, `{"code":11128,"msg":"Illegal API invocation from an unapproved channel"}`, core.FailureKindChannelRejected},
+		{"channel rejected on 200", 200, `{"code":11128,"msg":"Illegal API invocation from an unapproved channel"}`, core.FailureKindChannelRejected},
+		// 11128 只出现在 requestId 里不算渠道校验失败。
+		{"11128 in requestId is not channel rejected", 400, `{"code":12345,"msg":"bad request","requestId":"trace-11128-abc"}`, core.FailureKindClient},
 		// 参数非法。
 		{"bad params", 400, `{"msg":"Unmarshal chat params failed"}`, core.FailureKindBadParams},
 		// 其它 4xx。
@@ -93,6 +99,8 @@ func TestClassifyRetryableAndStatus(t *testing.T) {
 		{"prompt too long is not retryable", 400, `{"msg":"prompt is too long"}`, false, 400},
 		{"image invalid is not retryable", 400, `{"msg":"invalid_image_data"}`, false, 400},
 		{"bad params is not retryable", 400, `{"msg":"Unmarshal chat params failed"}`, false, 400},
+		// 渠道校验失败：上游用 500 表达，但宿主必须按请求级错误处置（400 不冷却账号）。
+		{"channel rejected is not retryable", 500, `{"code":11128,"msg":"unapproved channel"}`, false, 400},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -142,5 +150,31 @@ func TestClassifyIsModelRateLimit(t *testing.T) {
 	}
 	if IsModelRateLimit(`{"code":1,"msg":"rate limit"}`) {
 		t.Fatal("non-6004 must not be model-level rate limit")
+	}
+}
+
+// TestChannelRejectedKeepsReadableDetail 验证 11128 不会退化成裸数字码。
+//
+// 宿主对不可重试的错误直接回给客户端；错误码与消息都必须保留 11128 与上游说明，
+// 否则用户只能看到「no auth available / last upstream error: 11128」。
+func TestChannelRejectedKeepsReadableDetail(t *testing.T) {
+	body := `{"actions":["EDIT_INPUT","SUBMIT_FEEDBACK"],"code":11128,` +
+		`"msg":"Illegal API invocation from an unapproved channel",` +
+		`"displayMsg":{"en":"Request blocked. Please send it again"}}`
+	classified := Classify(http.StatusInternalServerError, body)
+	pluginErr, okPlugin := core.ToPluginError(classified).(*core.PluginError)
+	if !okPlugin {
+		t.Fatalf("ToPluginError() = %T, want *core.PluginError", core.ToPluginError(classified))
+	}
+	if pluginErr.Code != "upstream_channel_rejected" {
+		t.Fatalf("code = %q, want upstream_channel_rejected", pluginErr.Code)
+	}
+	if pluginErr.Retryable || pluginErr.HTTPStatus != http.StatusBadRequest {
+		t.Fatalf("retryable=%v status=%d, want false/400", pluginErr.Retryable, pluginErr.HTTPStatus)
+	}
+	for _, want := range []string{"11128", "unapproved channel"} {
+		if !strings.Contains(pluginErr.Message, want) {
+			t.Fatalf("message %q must contain %q", pluginErr.Message, want)
+		}
 	}
 }

@@ -16,6 +16,7 @@ func TestErrorMapping(t *testing.T) {
 		{"rate", &Failure{Kind: FailureKindRateLimit}, http.StatusTooManyRequests, true},
 		{"quota", &Failure{Kind: FailureKindHardCredit}, http.StatusPaymentRequired, true},
 		{"bad params", &Failure{Kind: FailureKindBadParams}, http.StatusBadRequest, false},
+		{"channel rejected", &Failure{Kind: FailureKindChannelRejected}, http.StatusBadRequest, false},
 		{"status passthrough", &Failure{Kind: FailureKindClient, Status: http.StatusConflict}, http.StatusConflict, false},
 	}
 	for _, tc := range cases {
