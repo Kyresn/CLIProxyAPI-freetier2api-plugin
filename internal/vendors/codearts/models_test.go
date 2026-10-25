@@ -3,11 +3,13 @@ package codearts
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"testing"
 
+	"freetier2api-plugin/internal/core"
 	"freetier2api-plugin/internal/hostbridge"
 )
 
@@ -180,5 +182,234 @@ func TestFetchQuotaUsesStandardRemainingKeys(t *testing.T) {
 	}
 	if values["used"] != 2500000 {
 		t.Fatalf("used = %v, want 2500000", values["used"])
+	}
+}
+
+// TestParseBuiltinModelsReadsBuiltinEnvelope 锁定内置目录的真实信封。
+//
+// 上游响应是 {"count":N,"builtinModels":[...]}，早期实现只认顶层 models[]，
+// 于是每一轮都解析失败、静默回落内置清单——控制台长期显示 4 条写死的旧模型，
+// 上下文 131072/8192 与真实值不符、图片能力与倍率全丢。
+func TestParseBuiltinModelsReadsBuiltinEnvelope(t *testing.T) {
+	body := `{"count":3,"builtinModels":[
+	  {"model_id":"GLM-5.2","model_name":"GLM-5.2","model_desc":"Latest Flagship: Long-horizon tasks & complex projects","enable":true,"supports_images":false,
+	   "credit":[{"input_from":0,"status":"0","ratio_display":"0.7x"},{"input_from":32001,"status":"0","ratio_display":"0.7x"},{"input_from":-1,"status":"0","ratio_display":"0.7x"}]},
+	  {"model_id":"kimi-k2.6-vl","model_name":"Kimi-K2.6-VL","model_desc":"Outstanding programming performance","supports_images":true,"credit":[]},
+	  {"model_id":"retired-model","model_name":"Retired","enable":false,"supports_images":false}]}`
+
+	models, errParse := parseBuiltinModels([]byte(body))
+	if errParse != nil {
+		t.Fatalf("parse: %v", errParse)
+	}
+	if len(models) != 2 {
+		t.Fatalf("enable=false 的模型应被跳过，实际 %d 条: %+v", len(models), models)
+	}
+
+	glm := models[0]
+	if glm.ID != "GLM-5.2" || glm.Name != "GLM-5.2" {
+		t.Fatalf("ID/Name 解析错: %+v", glm)
+	}
+	if glm.Credits != "0.7x" {
+		t.Fatalf("倍率应取基础档 ratio_display，实际 %q", glm.Credits)
+	}
+	// 内置目录不带上限，由兜底清单补位；输出上限必须夹到上游硬顶。
+	if glm.ContextWindow != 202752 {
+		t.Fatalf("ContextWindow = %d, want 202752", glm.ContextWindow)
+	}
+	if glm.MaxTokens != maxOutputTokenCap {
+		t.Fatalf("MaxTokens = %d, want %d", glm.MaxTokens, maxOutputTokenCap)
+	}
+	if !glm.SupportsTools {
+		t.Fatal("CodeArts 模型都支持工具调用")
+	}
+
+	vl := models[1]
+	if !vl.SupportsImages {
+		t.Fatal("supports_images=true 的模型必须报图片能力")
+	}
+	if vl.Credits != "" {
+		t.Fatalf("没有 credit 的模型倍率应为空，实际 %q", vl.Credits)
+	}
+	// 不在兜底清单里的模型不编造上下文，留给 core 层兜底。
+	if vl.ContextWindow != 0 || vl.MaxTokens != 0 {
+		t.Fatalf("未知上限应为 0，实际 %d/%d", vl.ContextWindow, vl.MaxTokens)
+	}
+}
+
+// TestParseBuiltinModelsAcceptsLegacyModelsKey 守住兼容分支。
+func TestParseBuiltinModelsAcceptsLegacyModelsKey(t *testing.T) {
+	models, errParse := parseBuiltinModels([]byte(`{"models":[{"model_name":"glm-5.2"}]}`))
+	if errParse != nil {
+		t.Fatalf("parse: %v", errParse)
+	}
+	if len(models) != 1 || models[0].ID != "glm-5.2" {
+		t.Fatalf("旧信封未兼容: %+v", models)
+	}
+}
+
+// TestBaseCreditDisplayPicksBaseTier 锁定倍率取档规则。
+//
+// 上游按输入长度给多条档位（基础档 input_from=0），控制台只有一格，取基础档；
+// status 显式非 "0" 的档视为未生效，跳过。ratio 与 ratio_display 不是一个量纲，
+// 必须原样透传，不能换算。
+func TestBaseCreditDisplayPicksBaseTier(t *testing.T) {
+	zero, high := 0, 32001
+	cases := []struct {
+		name  string
+		tiers []creditTier
+		want  string
+	}{
+		{"取基础档", []creditTier{{InputFrom: &high, RatioDisplay: "1.0x"}, {InputFrom: &zero, RatioDisplay: "0.7x"}}, "0.7x"},
+		{"跳过未生效档", []creditTier{{InputFrom: &zero, Status: "1", RatioDisplay: "9x"}, {InputFrom: &high, RatioDisplay: "0.7x"}}, "0.7x"},
+		{"缺 input_from 当基础档", []creditTier{{RatioDisplay: "0.32x"}}, "0.32x"},
+		{"空档位返回空", nil, ""},
+	}
+	for _, tc := range cases {
+		if got := baseCreditDisplay(tc.tiers); got != tc.want {
+			t.Fatalf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestCapOutputTokensClampsToUpstreamHardLimit 锁定输出上限的硬顶。
+//
+// 实测上游预校验：max_tokens=65536 放行，65537 起整条请求 400
+// （InferHub.001001005.400）。目录自述 131072/393216，直接照抄会让客户端
+// 用超出上限的 max_tokens 把请求打到整条失败。
+func TestCapOutputTokensClampsToUpstreamHardLimit(t *testing.T) {
+	if got := capOutputTokens(65537); got != maxOutputTokenCap {
+		t.Fatalf("65537 应夹到 %d，实际 %d", maxOutputTokenCap, got)
+	}
+	if got := capOutputTokens(393216); got != maxOutputTokenCap {
+		t.Fatalf("393216 应夹到 %d，实际 %d", maxOutputTokenCap, got)
+	}
+	if got := capOutputTokens(8192); got != 8192 {
+		t.Fatalf("未超限应原样保留，实际 %d", got)
+	}
+	if got := capOutputTokens(0); got != 0 {
+		t.Fatalf("未知上限保持 0，实际 %d", got)
+	}
+}
+
+// TestAdapterModelCredits 锁定倍率表与清单同源。
+//
+// 倍率与清单必须出自同一轮探测；没有倍率的模型不进表，控制台显示「—」，
+// 不能把「上游没给」画成「免费」。
+func TestAdapterModelCredits(t *testing.T) {
+	v := &adapter{}
+	infos := v.modelsToPluginAPI([]Model{
+		{ID: "GLM-5.2", Name: "GLM-5.2", ContextWindow: 202752, MaxTokens: 65536, SupportsTools: true, Credits: "0.7x"},
+		{ID: "kimi-k2.6-vl", Name: "Kimi-K2.6-VL", SupportsTools: true, SupportsImages: true},
+	})
+	if len(infos) != 2 {
+		t.Fatalf("转换条数不对: %d", len(infos))
+	}
+	if !core.ModelSupportsImages(infos[1]) {
+		t.Fatal("图片能力没有透传到宿主契约")
+	}
+
+	credits := v.ModelCredits()
+	if got := credits["GLM-5.2"]; got != "0.70X" {
+		t.Fatalf("倍率应归一化为 0.70X，实际 %q", got)
+	}
+	if _, exists := credits["kimi-k2.6-vl"]; exists {
+		t.Fatal("没有倍率的模型不应进表")
+	}
+}
+
+// TestBundledCatalogCarriesNoPricing 锁定兜底清单只存上限与能力。
+//
+// 描述与倍率以上游目录为唯一来源：兜底里再抄一份，上游调价/改名时没有任何
+// 测试能发现它已经过期。回归时会在控制台显示早已作废的倍率。
+func TestBundledCatalogCarriesNoPricing(t *testing.T) {
+	for _, model := range bundledModels() {
+		if model.Credits != "" {
+			t.Fatalf("%s 的兜底清单不应带倍率: %q", model.ID, model.Credits)
+		}
+		if model.Description != "" {
+			t.Fatalf("%s 的兜底清单不应带描述: %q", model.ID, model.Description)
+		}
+	}
+}
+
+// TestFallbackLimitIndexCoversBundledIDs 验证上限索引与兜底清单同源。
+func TestFallbackLimitIndexCoversBundledIDs(t *testing.T) {
+	for _, model := range bundledModels() {
+		hint, ok := fallbackLimitIndex[strings.ToLower(model.ID)]
+		if !ok {
+			t.Fatalf("%s 不在兜底上限索引里", model.ID)
+		}
+		if hint[0] != model.ContextWindow || hint[1] != model.MaxTokens {
+			t.Fatalf("%s 上限索引 = %v, want [%d %d]", model.ID, hint, model.ContextWindow, model.MaxTokens)
+		}
+	}
+}
+
+// TestCanonicalizeRequestModelResolvesCase 锁定旧写法（小写）到注册 ID 的归一。
+//
+// 宿主按 ID 精确匹配，而老文档里写的是 glm-5.2；上游对大小写敏感，原样出站
+// 会被拒。归一只发生在命中注册项时，未注册的名字原样放行。
+func TestCanonicalizeRequestModelResolvesCase(t *testing.T) {
+	v := &adapter{}
+	v.modelsToPluginAPI([]Model{{ID: "GLM-5.2"}, {ID: "Qwen3-VL-235B"}})
+
+	cases := []struct {
+		in       string
+		wantName string
+	}{
+		{`{"model":"glm-5.2","max_tokens":1024}`, "GLM-5.2"},
+		{`{"model":"qwen3-vl-235b"}`, "Qwen3-VL-235B"},
+		{`{"model":"glm-5.3"}`, "glm-5.3"},
+	}
+	for _, tc := range cases {
+		out := v.canonicalizeRequestModel([]byte(tc.in))
+		var payload map[string]any
+		if err := json.Unmarshal(out, &payload); err != nil {
+			t.Fatalf("%s: 输出不是合法 JSON: %v", tc.in, err)
+		}
+		if payload["model"] != tc.wantName {
+			t.Fatalf("%s: model = %v, want %s", tc.in, payload["model"], tc.wantName)
+		}
+	}
+
+	for _, body := range []string{`not json`, `{"max_tokens":1}`, `{"model":42}`, `null`} {
+		if got := string(v.canonicalizeRequestModel([]byte(body))); got != body {
+			t.Fatalf("不该改写却改写了: %q", got)
+		}
+	}
+}
+
+// TestModelsFromCatalogFallsBack 覆盖目录链路的降级：网络失败、非 200（由
+// fetchBuiltinCatalog 折成 error）、坏 JSON、空清单都回落兜底清单，且福利
+// 通道模型仍然并入。
+func TestModelsFromCatalogFallsBack(t *testing.T) {
+	benefit := []Model{{ID: "snap-chat", Name: "snap-chat", Benefit: true}}
+	fallbacks := []struct {
+		name string
+		body []byte
+		err  error
+	}{
+		{name: "网络失败", err: errors.New("boom")},
+		{name: "坏 JSON", body: []byte(`{"builtinModels":`)},
+		{name: "空清单", body: []byte(`{"count":0,"builtinModels":[]}`)},
+		{name: "空响应体", body: nil},
+	}
+	for _, tc := range fallbacks {
+		models := modelsFromCatalog(tc.body, tc.err, benefit)
+		if len(models) != len(bundledCatalog)+1 {
+			t.Fatalf("%s: models = %d, want %d", tc.name, len(models), len(bundledCatalog)+1)
+		}
+		if models[len(models)-1].ID != "snap-chat" {
+			t.Fatalf("%s: 福利模型未并入: %+v", tc.name, models)
+		}
+	}
+
+	body := []byte(`{"count":1,"builtinModels":[{"model_id":"GLM-5.2","model_name":"GLM-5.2"}]}`)
+	models := modelsFromCatalog(body, nil, benefit)
+	if len(models) != 2 || models[0].ID != "GLM-5.2" || models[1].ID != "snap-chat" {
+		t.Fatalf("models = %+v", models)
+	}
+	if models[0].ContextWindow != 202752 {
+		t.Fatalf("上下文兜底 = %d, want 202752", models[0].ContextWindow)
 	}
 }

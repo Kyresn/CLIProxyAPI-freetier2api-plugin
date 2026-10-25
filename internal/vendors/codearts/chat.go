@@ -6,11 +6,13 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -258,3 +260,63 @@ const (
 	EpLoginTicket  = "/v1/login/ticket"
 	EpOAuthTokens  = "/v1/oauth2/tokens"
 )
+
+// clampMaxTokens 把请求体里的 max_tokens / max_completion_tokens 夹到上游硬顶。
+//
+// 目录报出的上限可以夹，但客户端（如 auto-compact 续传）会自己带更大的值，
+// 上游对 max_tokens 的取值范围做平台级预校验，超限整条请求回
+// InferHub.001001005.400。这里只做最小改写：能解析成数字且确实超限才回写，
+// 其余情况原样放行，不碰请求体的其它字段。
+func clampMaxTokens(body []byte) []byte {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+	changed := false
+	for _, key := range []string{"max_tokens", "max_completion_tokens"} {
+		raw, ok := payload[key]
+		if !ok {
+			continue
+		}
+		value, okNumber := numericValue(raw)
+		if !okNumber || value <= maxOutputTokenCap {
+			continue
+		}
+		payload[key] = json.RawMessage(strconv.Itoa(maxOutputTokenCap))
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	clamped, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return clamped
+}
+
+// numericValue 读取 JSON 数字（含 131072.0）或数字字符串（常见于客户端配置）。
+// 布尔、对象、非数字字符串一律视为「不碰」。
+func numericValue(raw json.RawMessage) (int64, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return 0, false
+	}
+	switch typed := value.(type) {
+	case json.Number:
+		number, err := typed.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return int64(number), true
+	case string:
+		number, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		if err != nil {
+			return 0, false
+		}
+		return int64(number), true
+	}
+	return 0, false
+}
