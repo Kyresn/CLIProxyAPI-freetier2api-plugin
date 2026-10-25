@@ -1523,10 +1523,14 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   //
   // 点击文字/铅笔，或聚焦后按回车/空格进入编辑：回车/失焦保存，Esc 取消。
   // 清空保存 = 清除别名，恢复官方 ID。保存后同步一次宿主注册表。
+  //
+  // 编辑框预填「当前生效 ID」（已设别名取别名，否则取官方 ID），省去重敲全名；
+  // 光标置于开头，便于直接在原名前补平台前缀。预填值原样提交不算改动。
   function modelIDCell(model) {
     var cell = el("td");
     var bareID = String(model.id || "");
     var saved = model.alias || "";
+    var initial = saved || bareID;
     var key = String(model.scope_id || model.id);
 
     var wrap = el("span", null, "modelid");
@@ -1551,7 +1555,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       var input = document.createElement("input");
       input.type = "text";
       input.className = "aliasinput";
-      input.value = saved;
+      input.value = initial;
       // placeholder 用官方 ID：告诉用户「留空就是默认用它」。
       input.placeholder = bareID;
       var done = false;
@@ -1562,7 +1566,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         if (done) return;
         done = true;
         var next = commit ? (input.value || "").trim() : saved;
-        if (next === saved) { restore(focusBack); return; }
+        // 预填值原样提交等于没改：不落库，避免把官方 ID 存成一条多余别名。
+        if (next === initial || next === saved) { restore(focusBack); return; }
         input.disabled = true;
         api("POST", "/models/alias", { model: key, alias: next }).then(function (data) {
           if (!data) { restore(focusBack); return; }
@@ -1594,7 +1599,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       cell.textContent = "";
       cell.appendChild(input);
       input.focus();
-      input.select();
+      // 光标放开头而非全选：预填是为了补前缀，全选会被第一次按键整体覆盖。
+      input.setSelectionRange(0, 0);
     }
 
     wrap.addEventListener("click", beginEdit);
