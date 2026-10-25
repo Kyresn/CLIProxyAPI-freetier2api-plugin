@@ -24,7 +24,7 @@ import (
 type adapter struct {
 	*core.NativeAdapter[*Credential]
 	baseURL string
-	// creditsMu 保护 credits：最近一次模型清单里的计费档。
+	// credits 是最近一次模型清单里的计费档（并发安全，见 core.CreditTable）。
 	credits core.CreditTable
 }
 

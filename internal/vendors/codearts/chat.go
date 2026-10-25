@@ -261,21 +261,17 @@ const (
 	EpOAuthTokens  = "/v1/oauth2/tokens"
 )
 
-// clampMaxTokens 把请求体里的 max_tokens / max_completion_tokens 夹到上游硬顶。
+// clampTokenFields 把请求体里超限的输出上限夹到上游硬顶，返回是否改过。
 //
 // 目录报出的上限可以夹，但客户端（如 auto-compact 续传）会自己带更大的值，
 // 上游对 max_tokens 的取值范围做平台级预校验，超限整条请求回
 // InferHub.001001005.400。这里只做最小改写：能解析成数字且确实超限才回写，
 // 其余情况原样放行，不碰请求体的其它字段。
-func clampMaxTokens(body []byte) []byte {
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return body
-	}
+func clampTokenFields(payload map[string]json.RawMessage) bool {
 	changed := false
 	for _, key := range []string{"max_tokens", "max_completion_tokens"} {
-		raw, ok := payload[key]
-		if !ok {
+		raw, okRaw := payload[key]
+		if !okRaw {
 			continue
 		}
 		value, okNumber := numericValue(raw)
@@ -285,14 +281,7 @@ func clampMaxTokens(body []byte) []byte {
 		payload[key] = json.RawMessage(strconv.Itoa(maxOutputTokenCap))
 		changed = true
 	}
-	if !changed {
-		return body
-	}
-	clamped, err := json.Marshal(payload)
-	if err != nil {
-		return body
-	}
-	return clamped
+	return changed
 }
 
 // numericValue 读取 JSON 数字（含 131072.0）或数字字符串（常见于客户端配置）。

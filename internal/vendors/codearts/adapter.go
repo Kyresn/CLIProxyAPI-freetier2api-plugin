@@ -18,8 +18,7 @@ type adapter struct {
 	*core.NativeAdapter[*Credential]
 
 	// credits 缓存最近一轮目录探测的倍率表（官方模型 ID → 展示文案）。
-	creditsMu sync.RWMutex
-	credits   map[string]string
+	credits core.CreditTable
 
 	// modelsByLower 是小写模型名 → 注册 ID 的索引，用于把请求里的旧写法
 	// 归一成目录里的正式 ID。
@@ -105,15 +104,9 @@ func (v *adapter) ModelsForAuth(ctx context.Context, cred *core.Credential) ([]p
 // 的错配。CodeArts 的倍率来自内置目录 credit[].ratio_display，福利通道没有
 // 倍率字段，因此福利模型不进表（控制台显示「—」，不臆造成免费）。
 func (v *adapter) modelsToPluginAPI(models []Model) []pluginapi.ModelInfo {
-	credits := make(map[string]string, len(models))
-	for _, model := range models {
-		if label := core.FormatRate(model.Credits); label != "" {
-			credits[model.ID] = label
-		}
-	}
-	v.creditsMu.Lock()
-	v.credits = credits
-	v.creditsMu.Unlock()
+	core.FillCredits(&v.credits, models,
+		func(model Model) string { return model.ID },
+		func(model Model) string { return model.Credits })
 	ids := make(map[string]string, len(models))
 	for _, model := range models {
 		if id := strings.TrimSpace(model.ID); id != "" {
@@ -139,38 +132,55 @@ func (v *adapter) modelsToPluginAPI(models []Model) []pluginapi.ModelInfo {
 	})
 }
 
-// canonicalizeRequestModel 把请求体里的模型名规范成注册时的 ID。
+// prepareRequestBody 在出站前做两处最小改写：
 //
-// 宿主按 ID 精确匹配，客户端却可能沿用旧文档/旧别名的写法（例如小写
-// glm-5.2 对应注册的 GLM-5.2）。上游对模型名大小写敏感，原样出站会被拒；
-// 这里只做大小写归一，未注册的名字保持原样，交给上游判定。
-func (v *adapter) canonicalizeRequestModel(body []byte) []byte {
+//  1. model 归一成注册时的 ID：宿主按 ID 精确匹配，客户端却可能沿用旧文档/
+//     旧别名的大小写写法（例如小写 glm-5.2 对应注册的 GLM-5.2），上游对模型名
+//     大小写敏感，原样出站会被拒；
+//  2. max_tokens / max_completion_tokens 夹到上游硬顶（见 clampTokenFields）。
+//
+// 两处共用一次解析与一次序列化：各做一遍会让每个对话请求多两次 JSON 往返，
+// 而且第二遍是在第一遍的产物上再解析，纯属浪费。
+func (v *adapter) prepareRequestBody(body []byte) []byte {
 	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if errUnmarshal := json.Unmarshal(body, &payload); errUnmarshal != nil {
 		return body
 	}
-	raw, ok := payload["model"]
-	if !ok {
+	changed := v.canonicalizeModelField(payload)
+	if clampTokenFields(payload) {
+		changed = true
+	}
+	if !changed {
 		return body
+	}
+	encoded, errMarshal := json.Marshal(payload)
+	if errMarshal != nil {
+		return body
+	}
+	return encoded
+}
+
+// canonicalizeModelField 就地改写 model 字段，返回是否真的改了。
+// 未注册的名字保持原样，交给上游判定。
+func (v *adapter) canonicalizeModelField(payload map[string]json.RawMessage) bool {
+	raw, okRaw := payload["model"]
+	if !okRaw {
+		return false
 	}
 	var name string
-	if err := json.Unmarshal(raw, &name); err != nil {
-		return body
+	if errUnmarshal := json.Unmarshal(raw, &name); errUnmarshal != nil {
+		return false
 	}
 	canonical := v.canonicalModelName(name)
 	if canonical == name {
-		return body
+		return false
 	}
-	encoded, err := json.Marshal(canonical)
-	if err != nil {
-		return body
+	encoded, errMarshal := json.Marshal(canonical)
+	if errMarshal != nil {
+		return false
 	}
 	payload["model"] = encoded
-	rewritten, err := json.Marshal(payload)
-	if err != nil {
-		return body
-	}
-	return rewritten
+	return true
 }
 
 // canonicalModelName 用最新一轮目录把名字映射回注册 ID；未注册返回原名。
@@ -185,16 +195,7 @@ func (v *adapter) canonicalModelName(name string) string {
 
 // ModelCredits 实现 core.CreditsProvider：返回「官方模型 ID → 计费倍率」。
 func (v *adapter) ModelCredits() map[string]string {
-	v.creditsMu.RLock()
-	defer v.creditsMu.RUnlock()
-	if len(v.credits) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(v.credits))
-	for id, value := range v.credits {
-		out[id] = value
-	}
-	return out
+	return v.credits.Snapshot()
 }
 
 // ---- 执行 ----
@@ -207,7 +208,7 @@ func (v *adapter) Execute(ctx context.Context, cred *core.Credential, req *core.
 	}
 	payload, errChat := Chat(ctx, "", ChatRequest{
 		Credential: native,
-		Body:       v.canonicalizeRequestModel(clampMaxTokens(req.Payload)),
+		Body:       v.prepareRequestBody(req.Payload),
 		Stream:     false,
 		Benefit:    true,
 	})
@@ -228,7 +229,7 @@ func (v *adapter) ExecuteStream(ctx context.Context, cred *core.Credential, req 
 	}
 	resp, errStream := ChatStream(ctx, "", ChatRequest{
 		Credential: native,
-		Body:       v.canonicalizeRequestModel(clampMaxTokens(req.Payload)),
+		Body:       v.prepareRequestBody(req.Payload),
 		Stream:     true,
 		Benefit:    true,
 	})

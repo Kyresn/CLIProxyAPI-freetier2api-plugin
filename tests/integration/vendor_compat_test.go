@@ -77,7 +77,7 @@ func TestVendorCapabilities(t *testing.T) {
 		"autoclawcn":        {credits: true, refresh: true, quota: true, checkin: true, models: true, merge: true, configure: true, authMode: "oauth"},
 		"autoclawglobal":    {credits: true, login: true, refresh: true, quota: true, checkin: true, models: true, merge: true, configure: true, authMode: "oauth"},
 		"cline":             {credits: true, login: true, refresh: true, merge: true, configure: true, authMode: "oauth"},
-		"codearts":          {login: true, refresh: true, quota: true, checkin: true, models: true, merge: true},
+		"codearts":          {credits: true, login: true, refresh: true, quota: true, checkin: true, models: true, merge: true},
 		"minimaxcodecn":     {login: true, refresh: true, quota: true, checkin: true, models: true, merge: true, configure: true},
 		"minimaxcodeglobal": {login: true, refresh: true, quota: true, checkin: true, models: true, merge: true, configure: true},
 		"opencodezen":       {credits: true, refresh: true, models: true, merge: true, configure: true, authMode: "apikey"},

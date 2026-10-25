@@ -362,7 +362,7 @@ func TestCanonicalizeRequestModelResolvesCase(t *testing.T) {
 		{`{"model":"glm-5.3"}`, "glm-5.3"},
 	}
 	for _, tc := range cases {
-		out := v.canonicalizeRequestModel([]byte(tc.in))
+		out := v.prepareRequestBody([]byte(tc.in))
 		var payload map[string]any
 		if err := json.Unmarshal(out, &payload); err != nil {
 			t.Fatalf("%s: 输出不是合法 JSON: %v", tc.in, err)
@@ -373,7 +373,7 @@ func TestCanonicalizeRequestModelResolvesCase(t *testing.T) {
 	}
 
 	for _, body := range []string{`not json`, `{"max_tokens":1}`, `{"model":42}`, `null`} {
-		if got := string(v.canonicalizeRequestModel([]byte(body))); got != body {
+		if got := string(v.prepareRequestBody([]byte(body))); got != body {
 			t.Fatalf("不该改写却改写了: %q", got)
 		}
 	}

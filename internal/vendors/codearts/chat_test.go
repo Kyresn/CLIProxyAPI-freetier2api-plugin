@@ -24,8 +24,9 @@ func TestClampMaxTokens(t *testing.T) {
 		{name: "恰好在顶保留", in: `{"max_tokens":65536}`, want: 65536},
 		{name: "未超限原样", in: `{"max_tokens":4096}`, want: 4096},
 	}
+	v := &adapter{}
 	for _, tc := range cases {
-		out := clampMaxTokens([]byte(tc.in))
+		out := v.prepareRequestBody([]byte(tc.in))
 		var payload map[string]any
 		if err := json.Unmarshal(out, &payload); err != nil {
 			t.Fatalf("%s: 输出不是合法 JSON: %v (%s)", tc.name, err, out)
@@ -53,7 +54,7 @@ func TestClampMaxTokensPassesThroughUntouched(t *testing.T) {
 		`null`,
 		`{"max_tokens":4096}`,
 	} {
-		if got := string(clampMaxTokens([]byte(body))); got != body {
+		if got := string((&adapter{}).prepareRequestBody([]byte(body))); got != body {
 			t.Fatalf("body 应原样返回，实际 %q", got)
 		}
 	}
