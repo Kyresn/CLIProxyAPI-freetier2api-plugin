@@ -202,7 +202,7 @@ func quotaGroup(displayName string, bucket *QuotaBucket) *pluginapi.QuotaGroup {
 	fraction := 0.0
 	switch {
 	case bucket.Total > 0:
-		fraction = clampFraction(bucket.Remaining / bucket.Total)
+		fraction = core.ClampFraction(bucket.Remaining / bucket.Total)
 	case bucket.Remaining > 0:
 		fraction = 1
 	}
@@ -215,18 +215,6 @@ func quotaGroup(displayName string, bucket *QuotaBucket) *pluginapi.QuotaGroup {
 			ResetTime:         bucket.ResetTime,
 			Description:       description,
 		}},
-	}
-}
-
-// clampFraction 把比例夹到 [0, 1]。
-func clampFraction(value float64) float64 {
-	switch {
-	case value < 0:
-		return 0
-	case value > 1:
-		return 1
-	default:
-		return value
 	}
 }
 
