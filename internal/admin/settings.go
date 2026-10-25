@@ -40,6 +40,9 @@ func (s *Service) handleSettingsRequest(req pluginapi.ManagementRequest) plugina
 		return ErrorResponse(errTag)
 	}
 	changed := map[string]any{}
+	// registryDirty 表示本次请求改变了对外模型 ID 的生效值：控制台据此立即
+	// 触发宿主配置重载（与别名/禁用同一条通道），把模型注册表重建出来。
+	registryDirty := false
 	s.deps.MutateState(func(current *state.State) {
 		if body.AutoCheckin != nil {
 			current.AutoCheckin = body.AutoCheckin
@@ -69,6 +72,7 @@ func (s *Service) handleSettingsRequest(req pluginapi.ManagementRequest) plugina
 			current.ModelNameTag = modelNameTag
 			if EffectiveModelNameTag(s.deps.Config(), modelNameTag) != before {
 				current.RestartPending = true
+				registryDirty = true
 			}
 			changed[ModelNameTagKey] = modelNameTag
 		}
@@ -105,6 +109,7 @@ func (s *Service) handleSettingsRequest(req pluginapi.ManagementRequest) plugina
 	s.tasks.Poke()
 	return JSONResponse(http.StatusOK, map[string]any{
 		"ok": true, "changed": changed, "settings": s.settingsView(),
+		"model_registry_dirty": registryDirty,
 	})
 }
 

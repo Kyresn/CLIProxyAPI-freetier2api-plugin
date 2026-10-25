@@ -110,8 +110,21 @@ func TestNormalizeModelNameTagPointer(t *testing.T) {
 	}
 }
 
+// registryDirtyOf 读出 /settings 响应里的 model_registry_dirty。
+func registryDirtyOf(t *testing.T, response pluginapi.ManagementResponse) bool {
+	t.Helper()
+	var payload struct {
+		Dirty bool `json:"model_registry_dirty"`
+	}
+	if err := json.Unmarshal(response.Body, &payload); err != nil {
+		t.Fatalf("unmarshal settings response: %v", err)
+	}
+	return payload.Dirty
+}
+
 // TestSettingsRequestMarksRestartPending 验证改标识与手动别名同语义：
-// 置 RestartPending，让控制台提示待生效并触发 syncModelConfig 自愈。
+// 置 RestartPending 并回 model_registry_dirty，控制台据此立即触发
+// syncModelConfig 重建注册表；生效值没变时两者都不出现。
 func TestSettingsRequestMarksRestartPending(t *testing.T) {
 	deps := newStubDeps(t)
 	service := newServiceWithDeps(t, deps)
@@ -124,6 +137,9 @@ func TestSettingsRequestMarksRestartPending(t *testing.T) {
 	}
 	if !deps.State().RestartPending {
 		t.Fatal("改 model_name_tag 应置 RestartPending")
+	}
+	if !registryDirtyOf(t, response) {
+		t.Fatal("改 model_name_tag 应回 model_registry_dirty=true")
 	}
 	if got := settingsText(t, service, ModelNameTagKey); got != ModelNameTagPrefix {
 		t.Fatalf("保存后生效值 = %q", got)
@@ -139,5 +155,8 @@ func TestSettingsRequestMarksRestartPending(t *testing.T) {
 	}
 	if deps.State().RestartPending {
 		t.Fatal("生效值未变时不应置 RestartPending")
+	}
+	if registryDirtyOf(t, response) {
+		t.Fatal("生效值未变时不应回 model_registry_dirty=true")
 	}
 }

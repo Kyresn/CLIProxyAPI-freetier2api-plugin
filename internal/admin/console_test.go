@@ -542,3 +542,16 @@ func TestConsolePageSettingsLabelsAndDisclaimer(t *testing.T) {
 		t.Fatal("console page must replace 自动每日任务 with 每日自动任务")
 	}
 }
+
+// TestConsoleSettingsSyncsModelRegistryImmediately 锁定渠道标识保存后立即生效：
+// 响应带 model_registry_dirty 时复用 syncModelConfig 触发宿主重载，页面不再
+// 让用户「等模型清单刷新（或重启宿主）」。
+func TestConsoleSettingsSyncsModelRegistryImmediately(t *testing.T) {
+	page := Page("/plugins/freetier2api")
+	if !strings.Contains(page, "if (data && data.model_registry_dirty) { syncModelConfig(); }") {
+		t.Fatal("保存设置后必须按 model_registry_dirty 触发 syncModelConfig")
+	}
+	if strings.Contains(page, "等模型清单刷新") {
+		t.Fatal("渠道标识是即时生效的，页面不应再提示等待清单刷新")
+	}
+}

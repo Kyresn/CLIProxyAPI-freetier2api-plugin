@@ -444,7 +444,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
             <option value="suffix">后缀（如 GLM-5.3-zcode）</option>
           </select>
         </label>
-        <span class="hint">给各供应商的模型名自动加渠道标识，改后需等模型清单刷新（或重启宿主）生效</span>
+        <span class="hint">给各供应商的模型名自动加渠道标识</span>
       </div>
       <details class="fold" id="scheduleFold">
         <summary>任务排程</summary>
@@ -2744,8 +2744,11 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       var hours = raw.split(",").map(function (v) { return parseInt(v.trim(), 10); }).filter(function (v) { return !isNaN(v); });
       payload.task_schedules[input.dataset.taskKind] = hours;
     });
-    api("POST", "/settings", payload).then(function () {
+    api("POST", "/settings", payload).then(function (data) {
       banner("ok", "设置已保存并生效");
+      // 渠道标识改变对外模型 ID，保存后立刻重载宿主配置重建注册表，
+      // 与别名/禁用共用同一条同步通道，不必等页面重进或重启宿主。
+      if (data && data.model_registry_dirty) { syncModelConfig(); }
       loadStatus();
     }).catch(function (err) { banner("err", err.message); });
   });
