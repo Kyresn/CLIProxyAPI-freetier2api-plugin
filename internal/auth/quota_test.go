@@ -133,7 +133,7 @@ func TestTotalsIgnoresUnknownKeys(t *testing.T) {
 // TestTokenPlanFamilyIndependentOfDefault 锁定 token_plan 族与 default 族
 // 并存时的取值行为：点数（default）有容量时优先，token 余量不覆盖点数；
 // 点数耗尽时回落 token_plan。MiniMax Token Plan 与 op 点数并存的账号
-// 依赖这一行为（见 minimax PR 审查 P1-1）。
+// 依赖这一行为：同 key 会撞族，token 余量会被点数静默吞掉。
 func TestTokenPlanFamilyIndependentOfDefault(t *testing.T) {
 	both := &pluginapi.QuotaFetchResponse{Summary: []pluginapi.QuotaMetric{
 		{Key: "remaining", Value: 500, Unit: "点"},

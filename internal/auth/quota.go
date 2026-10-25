@@ -51,7 +51,7 @@ type QuotaTotals struct {
 
 // Totals 折算「剩余 / 总额」。
 //
-// 键名按族识别（标准键、credit_*、user_quota_* / addon_quota_*）。
+// 键名按族识别（标准键、credit_*、user_quota_* / addon_quota_*、token_plan）。
 // **新增供应商必须复用其中一族**：这个函数只认白名单，写别的键名会静默
 // 得到 0/0，页面就会一直显示 0 / 0（Trae 曾用 remaining_credit 踩过）。
 //
