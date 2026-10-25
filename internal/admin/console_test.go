@@ -551,7 +551,9 @@ func TestConsoleSettingsSyncsModelRegistryImmediately(t *testing.T) {
 	if !strings.Contains(page, "if (data && data.model_registry_dirty) { syncModelConfig(); }") {
 		t.Fatal("保存设置后必须按 model_registry_dirty 触发 syncModelConfig")
 	}
-	if strings.Contains(page, "等模型清单刷新") {
-		t.Fatal("渠道标识是即时生效的，页面不应再提示等待清单刷新")
+	for _, stale := range []string{"等模型清单刷新", "给各供应商的模型名自动加渠道标识"} {
+		if strings.Contains(page, stale) {
+			t.Fatalf("渠道标识即时生效，页面不应再有旁注：%s", stale)
+		}
 	}
 }
