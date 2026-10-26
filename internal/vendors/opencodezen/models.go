@@ -52,8 +52,8 @@ type Model struct {
 	Efforts []string
 	// Credits 是计费展示文案。
 	//
-	// 只在上游目录明确「输入与输出单价都是 0」时记为「免费」；价格不是倍率，
-	// 有价格的模型不进倍率列（显示「—」），不把美元价伪装成折扣倍数。
+	// 只在上游目录明确「输入与输出单价都是 0」时记为零倍率（0.00X）；价格不是
+	// 倍率，有价格的模型不进倍率列（显示「—」），不把美元价伪装成折扣倍数。
 	Credits string
 }
 
@@ -360,8 +360,10 @@ func applyModelsDevCatalog(models []Model, catalog modelsDevCatalog) {
 			model.Description = entry.Description
 		}
 		// 免费信号来自目录的 price 全 0；只做这一种判定，价格本身不进倍率列。
+		// 展示成数值倍率 "0.00X" 而不是「免费」：控制台这一列是费用倍率，
+		// 同一列里混汉字会让排序/比较失去意义。
 		if model.Credits == "" && entry.Cost != nil && entry.Cost.Input == 0 && entry.Cost.Output == 0 {
-			model.Credits = "免费"
+			model.Credits = "0.00X"
 		}
 	}
 }
