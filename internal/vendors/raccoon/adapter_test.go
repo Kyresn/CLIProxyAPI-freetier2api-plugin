@@ -93,6 +93,44 @@ func TestParseCatalogShapes(t *testing.T) {
 	}
 }
 
+func TestParseCatalogDisplayFields(t *testing.T) {
+	// 上游字段语义与直觉相反：name 是模型 ID，description 是内部代号，
+	// display_description 才是营销文案。展示名必须取自前者，不能把
+	// 「适合简单问答、内容改写」这类备注当成模型名称。
+	longCodename := strings.Repeat("长", maxModelDisplayNameRunes+1)
+	body := `{"data":{"categories":[{"models":[
+		{"name":"raccoon-8c4485","description":"Raccoon-Work","display_description":"适合复杂办公、代码开发与图像识别"},
+		{"name":"raccoon-lite","display_name":"Raccoon-Lite","description":"内部代号","display_description":"适合简单问答、内容改写"},
+		{"name":"raccoon-long","description":"` + longCodename + `","display_description":"代号过长时回落模型 ID"},
+		{"name":"raccoon-plain","description":"Raccoon-Plain"}
+	]}]}}`
+	models, errParse := parseCatalog([]byte(body))
+	if errParse != nil {
+		t.Fatalf("parse: %v", errParse)
+	}
+
+	want := []struct {
+		id, displayName, description string
+	}{
+		{"raccoon-8c4485", "Raccoon-Work", "适合复杂办公、代码开发与图像识别"},
+		{"raccoon-lite", "Raccoon-Lite", "适合简单问答、内容改写"},
+		{"raccoon-long", "raccoon-long", "代号过长时回落模型 ID"},
+		{"raccoon-plain", "Raccoon-Plain", "小浣熊上游模型"},
+	}
+	infos := (&adapter{}).modelsToPluginAPI(models)
+	if len(infos) != len(want) {
+		t.Fatalf("plugin models = %d, want %d", len(infos), len(want))
+	}
+	for i, expected := range want {
+		info := infos[i]
+		if info.ID != expected.id || info.Name != expected.id ||
+			info.DisplayName != expected.displayName || info.Description != expected.description {
+			t.Fatalf("model[%d] = %+v, want id/name %q, display %q, description %q",
+				i, info, expected.id, expected.displayName, expected.description)
+		}
+	}
+}
+
 func TestParseCatalogBillingMultiplier(t *testing.T) {
 	// 上游把 billing_multiplier 发成数字、字符串、嵌 params 三种形态；
 	// 0 是合法倍率（限免档），缺失才是「没提供」，负数属于异常数据。

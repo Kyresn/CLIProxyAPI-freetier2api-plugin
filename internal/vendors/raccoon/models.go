@@ -3,8 +3,10 @@ package raccoon
 // 本文件实现小浣熊的模型目录获取（GET {llm_base}/model_catalog）。
 //
 // 上游形态 {"code":0,"data":{"categories":[{type,models:[…]}]}}，
-// 条目 {name, description, visible, context_window, max_tokens,
-// billing_multiplier, params:{...}}：context_window / max_tokens 可能是
+// 条目 {name, display_name, description, display_description, visible,
+// context_window, max_tokens, billing_multiplier, params:{...}}：
+// name 是模型 ID、description 是内部代号（模型选择器里该显示的名字）、
+// display_description 才是营销文案；context_window / max_tokens 可能是
 // 字符串或数字，也可能嵌在 params 里（两处都认）；同名首次出现者胜；
 // visible 缺省 true。
 //
@@ -18,6 +20,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"freetier2api-plugin/internal/core"
 	"freetier2api-plugin/internal/hostbridge"
@@ -121,6 +124,7 @@ func parseCatalog(body []byte) ([]Model, error) {
 type catalogEntry struct {
 	Name               string    `json:"name"`
 	ModelName          string    `json:"model_name"`
+	DisplayName        string    `json:"display_name"`
 	Description        string    `json:"description"`
 	DisplayDescription string    `json:"display_description"`
 	Visible            *bool     `json:"visible"`
@@ -223,8 +227,8 @@ func (e *catalogEntry) normalize() (Model, bool) {
 	}
 	return Model{
 		ID:              id,
-		Name:            core.FirstNonEmpty(e.DisplayDescription, id),
-		Description:     core.FirstNonEmpty(e.DisplayDescription, e.Description, "小浣熊上游模型"),
+		Name:            e.displayName(id),
+		Description:     strings.TrimSpace(e.DisplayDescription),
 		ContextWindow:   contextWindow,
 		MaxOutputTokens: maxTokens,
 		IsReasoning:     true,
@@ -233,6 +237,28 @@ func (e *catalogEntry) normalize() (Model, bool) {
 		// 实付倍率优先：用户真正会被扣的是这个数（折扣/限免期间与基准价不同）。
 		Credits: firstText(e.BillingEffectiveMultiplier, e.BillingMultiplier, e.nestedBillingMultiplier()),
 	}, true
+}
+
+// maxModelDisplayNameRunes 是允许把上游内部代号当展示名的长度上限。
+//
+// description 既可能是 "Raccoon-Work" 这类代号，也可能是一整句说明；
+// 句子放进模型选择器会撑爆列表，超过上限时退回 wire id。
+const maxModelDisplayNameRunes = 64
+
+// displayName 选择模型展示名。
+//
+// 上游字段语义与常见直觉相反：name 是模型 ID，description 是内部代号
+// （列表里该显示的名字），营销文案在 display_description。早期实现拿
+// display_description 当展示名，模型列表因此显示成「适合简单问答、内容改写」
+// 这类备注。显式 display_name 最优先，其次才是长度合理的代号。
+func (e *catalogEntry) displayName(id string) string {
+	if name := strings.TrimSpace(e.DisplayName); name != "" {
+		return name
+	}
+	if codename := strings.TrimSpace(e.Description); codename != "" && utf8.RuneCountInString(codename) <= maxModelDisplayNameRunes {
+		return codename
+	}
+	return id
 }
 
 func (e *catalogEntry) nestedContext() *flexInt {
