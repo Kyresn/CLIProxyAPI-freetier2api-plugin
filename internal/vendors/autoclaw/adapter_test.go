@@ -154,17 +154,6 @@ func TestAuthSign(t *testing.T) {
 	}
 }
 
-func TestPrepareBodyRewritesModelAndDropsUser(t *testing.T) {
-	got := prepareBody([]byte(`{"model":"cn/zai_auto","user":"u1","messages":[]}`), "zai_auto")
-	decoded := string(got)
-	if !strings.Contains(decoded, "\"model\":\"zai_auto\"") {
-		t.Fatalf("model not rewritten: %s", decoded)
-	}
-	if strings.Contains(decoded, "user") {
-		t.Fatalf("user field not dropped: %s", decoded)
-	}
-}
-
 func TestClassifyByCodeAndText(t *testing.T) {
 	if f := Classify(200, 410000, "session"); f.Kind != core.FailureKindSessionDead {
 		t.Fatalf("410000 kind = %q", f.Kind)

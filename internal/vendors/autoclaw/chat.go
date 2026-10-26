@@ -249,8 +249,10 @@ func doChat(ctx context.Context, baseURL string, req ChatRequest) (*http.Respons
 	return resp, nil
 }
 
-// prepareBody 是请求体出站前的钩子：把 model 改写为上游路由名并去掉 user 字段
-// （与 Agent2API 的 _prepare_proxy_body 一致；user 字段会被上游拒绝）。
+// prepareBody 是请求体出站前的钩子：把 model 改写为上游路由名、去掉 user 字段
+// （与 Agent2API 的 _prepare_proxy_body 一致；user 字段会被上游拒绝），再补两道
+// 上游预校验适配（system 白名单前缀与 max_tokens 下限，见 normalizeSystemPrompt /
+// normalizeMaxTokens）。
 func prepareBody(body []byte, model string) []byte {
 	if len(body) == 0 {
 		return body
@@ -263,11 +265,206 @@ func prepareBody(body []byte, model string) []byte {
 		payload["model"] = model
 	}
 	delete(payload, "user")
+	normalizeSystemPrompt(payload)
+	normalizeMaxTokens(payload)
 	encoded, errMarshal := json.Marshal(payload)
 	if errMarshal != nil {
 		return body
 	}
 	return encoded
+}
+
+// ---- 上游预校验适配（Issue #41）----
+//
+// 上游给 proxy chat 加了两道预校验闸门，AND 关系，命中即 406 空响应体
+// （实测口径见 Agent2API 的 providers/autoclaw/prompt.rs 与 adapter.rs）：
+//
+//  1. system 白名单（2026-09-22 起）：首条消息必须是 system，正文以 identityLine
+//     开头且带「## Tooling」段，且任何 system/developer 正文都不得含外来 harness
+//     身份句（Claude Code / Codex / ZCode / DeepSeek Harness）。
+//  2. max_tokens 下限（2026-09-29 起）：小正整数（30~8192）一律拒收；不传或
+//     ≥ maxTokensFloor 都放行。
+//
+// 普通 OpenAI 客户端（system 是中性句或没有、max_tokens 常见 1024/4096）两条都
+// 命中，所以必须在出站前归一，而不是让用户改客户端。
+
+// identityLine 是上游闸门要求「以它开头」的身份句（幂等判定只认这一条）。
+const identityLine = "You are a personal assistant running inside OpenClaw."
+
+// identityPrefix 是出站身份前缀：身份句 + 「## Tooling」段，逐字取自官方客户端
+// system prompt 的开头两行（末尾换行与 Agent2API 一致，正文另起一段）。
+const identityPrefix = identityLine + "\n\n" +
+	"## Tooling\n" +
+	"Available tools are policy-filtered. Names are case-sensitive; call exactly as listed.\n"
+
+// maxTokensFloor 是实测过的安全下限：8192（拒）与 10000（过）之间取后者。
+const maxTokensFloor = 10000
+
+// foreignIdentities 是上游按字面拦截的外来身份句 → 中性说法（长的在前：短串先
+// 命中会把长串切碎）。替换串刻意不含产品名——闸门拦的就是产品名本身。
+var foreignIdentities = [][2]string{
+	{"You are ZCode, an interactive coding agent", "You are an interactive coding agent"},
+	{"You are a coding agent running in the Codex CLI tool", "You are a coding agent running in a terminal CLI tool"},
+	{"You are a coding agent running in the Codex CLI", "You are a coding agent running in a terminal CLI"},
+	{"You are running as a coding agent in the Codex CLI", "You are running as a coding agent in a terminal CLI"},
+	{"You are Claude Code", "You are a coding assistant"},
+	{"You are ZCode", "You are an interactive coding agent"},
+	{"You are an AI agent powered by DeepSeek Harness", "You are an AI agent powered by a local coding harness"},
+	{"You are Codex", "You are a coding agent"},
+}
+
+// normalizeSystemPrompt 让出站 system 提示符合上游白名单：先改写所有
+// system/developer 正文里的外来身份句，再保证首条消息是 system 且正文以身份句
+// 开头（已以身份句开头时只改写、不再前置，重复出站不会重复拼接）。首条不是
+// system 时在头部插一条只带前缀的 system——不重排、不删除其余消息，也不动
+// user/assistant/tool 的内容（上游闸门只看 system/developer）。
+func normalizeSystemPrompt(payload map[string]any) {
+	messages, okMessages := payload["messages"].([]any)
+	if !okMessages {
+		return
+	}
+	for _, item := range messages {
+		message, okMessage := item.(map[string]any)
+		if okMessage && isSystemRole(message) {
+			rewriteIdentities(message)
+		}
+	}
+	if len(messages) > 0 {
+		if first, okFirst := messages[0].(map[string]any); okFirst && isSystemRole(first) {
+			prependIdentity(first)
+			return
+		}
+	}
+	payload["messages"] = append([]any{map[string]any{
+		"role":    "system",
+		"content": identityPrefix,
+	}}, messages...)
+}
+
+// isSystemRole 报告消息角色是否为 system/developer。
+func isSystemRole(message map[string]any) bool {
+	role, okRole := message["role"].(string)
+	if !okRole {
+		return false
+	}
+	trimmed := strings.TrimSpace(role)
+	return strings.EqualFold(trimmed, "system") || strings.EqualFold(trimmed, "developer")
+}
+
+// rewriteIdentities 把一条 system 消息正文里的外来身份句换成中性说法。
+//
+// 正文有两种承载形态：字符串，或 text part 数组；其它形态无文本可改，交给
+// prependIdentity 统一处置。
+func rewriteIdentities(message map[string]any) {
+	switch content := message["content"].(type) {
+	case string:
+		message["content"] = replaceForeignIdentities(content)
+	case []any:
+		for _, item := range content {
+			part, okPart := item.(map[string]any)
+			if !okPart {
+				continue
+			}
+			if text, okText := part["text"].(string); okText {
+				part["text"] = replaceForeignIdentities(text)
+			}
+		}
+	}
+}
+
+// prependIdentity 给一条 system 消息的正文前置身份前缀。
+//
+// content 的三种形态：字符串直接拼；数组拼进第一个 text part（一个都没有时在
+// 头部插一个）；其它（缺失 / null / 对象）换成前缀本身——这种 content 当 system
+// 提示词本来就不成立，原样发出去必然 406。
+func prependIdentity(message map[string]any) {
+	switch content := message["content"].(type) {
+	case string:
+		if !strings.HasPrefix(content, identityLine) {
+			message["content"] = joinIdentity(content)
+		}
+	case []any:
+		for _, item := range content {
+			part, okPart := item.(map[string]any)
+			if !okPart {
+				continue
+			}
+			text, okText := part["text"].(string)
+			if !okText {
+				continue
+			}
+			if !strings.HasPrefix(text, identityLine) {
+				part["text"] = joinIdentity(text)
+			}
+			return
+		}
+		message["content"] = append([]any{map[string]any{"type": "text", "text": identityPrefix}}, content...)
+	default:
+		message["content"] = identityPrefix
+	}
+}
+
+// joinIdentity 返回前缀 + 一个空行 + 原文（原文为空时不补空行）。
+func joinIdentity(original string) string {
+	if original == "" {
+		return identityPrefix
+	}
+	return identityPrefix + "\n" + original
+}
+
+// replaceForeignIdentities 逐条套用 foreignIdentities（全量替换，忽略 ASCII 大小写）。
+func replaceForeignIdentities(text string) string {
+	for _, rule := range foreignIdentities {
+		text = replaceAllFold(text, rule[0], rule[1])
+	}
+	return text
+}
+
+// replaceAllFold 把 text 里的 from 全量替换为 to（忽略 ASCII 大小写）。
+func replaceAllFold(text, from, to string) string {
+	index := indexFold(text, from)
+	if index < 0 {
+		return text
+	}
+	var out strings.Builder
+	out.Grow(len(text))
+	for index >= 0 {
+		out.WriteString(text[:index])
+		out.WriteString(to)
+		text = text[index+len(from):]
+		index = indexFold(text, from)
+	}
+	out.WriteString(text)
+	return out.String()
+}
+
+// indexFold 返回 from 在 text 里首次出现的字节下标（忽略 ASCII 大小写），未命中返回 -1。
+//
+// 按字节滑窗配 strings.EqualFold：from 全是 ASCII，非 ASCII 字节 >= 0x80 折不成
+// ASCII，命中区间只可能由 ASCII 字节组成，切片一定是字符边界。
+func indexFold(text, from string) int {
+	if from == "" {
+		return -1
+	}
+	for start := 0; start+len(from) <= len(text); start++ {
+		if strings.EqualFold(text[start:start+len(from)], from) {
+			return start
+		}
+	}
+	return -1
+}
+
+// normalizeMaxTokens 把出站体里会被上游拒收的小正整数 max_tokens 抬到下限。
+//
+// 只归一实测过被拒的形态（存在 + 正整数 + < maxTokensFloor）：缺省不注入（上游
+// 对缺省是 200，凭空注入反而改变行为），其余形态（≤0 / 非整数 / ≥ 下限 / 非数字）
+// 原样交给上游报错。max_completion_tokens 不参与该校验，一字不动。
+func normalizeMaxTokens(payload map[string]any) {
+	value, okValue := payload["max_tokens"].(float64)
+	if !okValue || value <= 0 || value >= maxTokensFloor || value != float64(int64(value)) {
+		return
+	}
+	payload["max_tokens"] = float64(maxTokensFloor)
 }
 
 // envelopeError 检查业务信封 {"code","msg"}：code 存在且非 0 时返回 (code, msg, true)。
