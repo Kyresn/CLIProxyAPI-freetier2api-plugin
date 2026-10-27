@@ -187,19 +187,19 @@ textarea { padding: 7px 11px; border: 1px solid var(--border-strong); border-rad
 input.aliasinput { padding: 3px 7px; width: 100%; min-width: 96px; font-size: 12.5px;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 input.aliasinput:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-/* 模型 ID / 别名合并列：文字可点击进入编辑，右侧 ✎ 给出可编辑暗示。 */
-.modelid { display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
-           border-bottom: 1px dashed var(--border-strong); padding: 1px 2px; }
-.modelid:hover { color: var(--accent); border-bottom-color: var(--accent); }
-.modelid:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
-.modelidedit { color: var(--muted); font-size: 11.5px; }
-.modelid:hover .modelidedit { color: var(--accent); }
+/* 表格内联编辑（模型 ID / 账号别名共用）：文字可点击进入编辑，右侧 ✎ 给出暗示。 */
+.editable { display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+            border-bottom: 1px dashed var(--border-strong); padding: 1px 2px; }
+.editable:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.editable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.editableedit { color: var(--muted); font-size: 11.5px; }
+.editable:hover .editableedit { color: var(--accent); }
 
 #models { overflow-x: auto; }
 #models table { min-width: 980px; }
 #models .col-check { width: 1%; text-align: center; padding-left: 8px; padding-right: 4px; }
 #models .col-status, #models .col-vendor { width: 1%; white-space: nowrap; }
-#models .modelidname { display: inline-block; max-width: clamp(120px, 14vw, 200px);
+#models .editablename { display: inline-block; max-width: clamp(120px, 14vw, 200px);
   overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
 #models .name-text { display: inline-block; max-width: clamp(80px, 10vw, 150px);
   overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
@@ -713,6 +713,97 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     if (node) node.textContent = text === undefined || text === null ? "" : String(text);
   }
 
+  // editableCell 渲染「文字 + ✎」的行内编辑单元格，模型 ID 与账号别名共用。
+  //
+  // 点击文字/铅笔，或聚焦后按回车/空格进入编辑：回车/失焦保存，Esc 取消。
+  // 保存空串表示清除，展示态回到 opts.fallback()。交互、键盘处理与样式只有
+  // 这一份实现，调用点只提供「显示什么」与「怎么存」。
+  //
+  // opts:
+  //   saved       当前已保存的值（空 = 未设置）
+  //   fallback()  未设置时的展示文本（存成函数：保存后要立刻反映最新值）
+  //   prefill()   编辑框预填值（已保存时一律用 saved）
+  //   placeholder 预填为空时的提示
+  //   mono        展示文本是否用等宽字体
+  //   title(saved) 展示态悬浮提示
+  //   save(next)  保存；返回 Promise，解析出 false 表示未保存（静默回退），
+  //               reject 表示保存失败（横幅提示 + 回退）
+  function editableCell(opts) {
+    var cell = el("td");
+    var saved = opts.saved || "";
+    var wrap = el("span", null, "editable");
+    wrap.setAttribute("role", "button");
+    wrap.setAttribute("tabindex", "0");
+    var nameSpan = el("span", null, opts.mono ? "editablename mono" : "editablename");
+    var pencil = el("span", "✎", "editableedit");
+    pencil.setAttribute("aria-hidden", "true");
+    wrap.appendChild(nameSpan);
+    wrap.appendChild(pencil);
+    cell.appendChild(wrap);
+    syncName();
+
+    function syncName() {
+      nameSpan.textContent = saved || opts.fallback();
+      wrap.setAttribute("title", opts.title(saved));
+    }
+
+    function restore(focusBack) {
+      cell.textContent = "";
+      syncName();
+      cell.appendChild(wrap);
+      if (focusBack) wrap.focus();
+    }
+
+    function beginEdit() {
+      // 预填「当前生效值」省去重敲；未设置时用 opts.prefill()。
+      var initial = saved || opts.prefill();
+      var input = document.createElement("input");
+      input.type = "text";
+      input.className = "aliasinput";
+      input.value = initial;
+      input.placeholder = opts.placeholder || "";
+      var done = false;
+
+      // finish 提交并回到展示态。focusBack 只在键盘结束时置真，
+      // 失焦提交不抢焦点，避免把用户刚点到的元素顶掉。
+      function finish(commit, focusBack) {
+        if (done) return;
+        done = true;
+        var next = commit ? (input.value || "").trim() : saved;
+        // 预填值原样提交等于没改：不落库，避免把默认值存成一条多余别名。
+        if (next === initial || next === saved) { restore(focusBack); return; }
+        input.disabled = true;
+        opts.save(next).then(function (ok) {
+          if (ok === false) { restore(focusBack); return; }
+          saved = next;
+          restore(focusBack);
+        }).catch(function (err) {
+          // 保存失败：回到原值并提示（错误是需要用户知晓的，成功则静默）。
+          banner("err", err.message);
+          restore(focusBack);
+        });
+      }
+
+      input.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter") { ev.preventDefault(); finish(true, true); }
+        else if (ev.key === "Escape") { ev.preventDefault(); finish(false, true); }
+      });
+      input.addEventListener("blur", function () { finish(true, false); });
+
+      cell.textContent = "";
+      cell.appendChild(input);
+      input.focus();
+      // 光标放开头而非全选：预填是为了补前缀，全选会被第一次按键整体覆盖。
+      input.setSelectionRange(0, 0);
+    }
+
+    wrap.addEventListener("click", beginEdit);
+    wrap.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); beginEdit(); }
+    });
+    return cell;
+  }
+
   // ---- 供应商表 ----
   //
   // 页面不硬编码供应商名：全部来自后端的 /vendors。这样新增供应商
@@ -793,16 +884,48 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     return text.slice(0, 4) + "***" + text.slice(-4);
   }
 
-  // accountDisplay 决定一个账号在表里显示什么。
+  // accountDisplay 决定一个账号在表里显示什么：别名优先，未设置时用上游名称。
   //
-  // API key 类账号的 label 就是 key 本身（添加时用户没给昵称），必须脱敏；
-  // 其余账号显示昵称/邮箱。
+  // 别名是用户自己起的名字，不是凭证，原样显示、不做脱敏。这里直接取 alias
+  // 而不是 label：改完别名后页面不重新拉 /status 也要立刻显示新名字，且清除
+  // 别名时 label 仍是上游名称，无需页面自己记住"原来的名字"。
+  // 未设别名时：API key 类账号的 label 就是 key 本身（添加时用户没给昵称），
+  // 必须脱敏；其余账号显示昵称/邮箱。
   function accountDisplay(account) {
+    if (account.alias) return account.alias;
     var vendor = vendorsById[account.vendor_id];
     if (vendor && vendor.auth_mode === "apikey") {
       return maskAccount(account.label || account.auth_id || "");
     }
     return account.label || account.auth_id || "-";
+  }
+
+  // accountNameCell 渲染「账号名 + ✎」行内编辑，交互复用模型 ID 那一套
+  // （editableCell），别名按账号身份（file_id）保存到 /accounts/alias。
+  //
+  // 编辑框只预填已保存的别名，不预填上游名称：把邮箱原样存成别名等于多一份
+  // 永远不同步的副本，还会让「是否设置过别名」失去意义。没有 file_id 的账号
+  // （非文件来源）不可编辑。
+  function accountNameCell(account) {
+    if (!account.file_id) return el("td", accountDisplay(account));
+    return editableCell({
+      saved: account.alias || "",
+      fallback: function () { return accountDisplay(account); },
+      prefill: function () { return ""; },
+      placeholder: "留空使用上游名称",
+      title: function (saved) {
+        return saved
+          ? "点击编辑账号别名（留空恢复上游名称）"
+          : "点击设置账号别名（留空即用上游名称）";
+      },
+      save: function (next) {
+        return api("POST", "/accounts/alias", { file_id: account.file_id, alias: next }).then(function (data) {
+          if (!data) return false;
+          account.alias = next;
+          return true;
+        });
+      }
+    });
   }
   function renderAccounts(status) {
     var host = document.getElementById("accounts");
@@ -841,7 +964,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       vendorCell.appendChild(pill(vendor, vendorChipClass(account.vendor_id, vendor)));
       row.appendChild(vendorCell);
 
-      row.appendChild(el("td", accountDisplay(account)));
+      row.appendChild(accountNameCell(account));
       row.appendChild(cellWith(account.disabled ? pill("已禁用", "err") : pill("正常", "ok")));
 
       // 签到 / 套餐领取列：支持领取的供应商（如 ZCode）展示套餐领取按钮；其余展示签到或「无签到活动」
@@ -1520,93 +1643,35 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   // modelIDCell 渲染「模型 ID / 别名」合并列：显示当前生效的对外 ID，
   // 右侧 ✎ 表示可编辑。未设别名时就是官方 ID，不出现「无别名」这种中间态。
   //
-  // 点击文字/铅笔，或聚焦后按回车/空格进入编辑：回车/失焦保存，Esc 取消。
-  // 清空保存 = 清除别名，恢复官方 ID。保存后同步一次宿主注册表。
+  // 交互与键盘处理复用 editableCell；清空保存 = 清除别名，恢复官方 ID。
+  // 保存成功后同步一次宿主注册表——别名的出站翻译本就是即时生效的，这一步
+  // 让 /v1/models 的 ID 也跟着变。
   //
   // 编辑框预填「当前生效 ID」（已设别名取别名，否则取官方 ID），省去重敲全名；
-  // 光标置于开头，便于直接在原名前补平台前缀。预填值原样提交不算改动。
+  // 光标置于开头（见 editableCell），便于直接在原名前补平台前缀。
   function modelIDCell(model) {
-    var cell = el("td");
     var bareID = String(model.id || "");
-    var saved = model.alias || "";
-    var initial = saved || bareID;
     var key = String(model.scope_id || model.id);
-
-    var wrap = el("span", null, "modelid");
-    wrap.setAttribute("role", "button");
-    wrap.setAttribute("tabindex", "0");
-    var nameSpan = el("span", null, "modelidname mono");
-    var pencil = el("span", "✎", "modelidedit");
-    pencil.setAttribute("aria-hidden", "true");
-    wrap.appendChild(nameSpan);
-    wrap.appendChild(pencil);
-    cell.appendChild(wrap);
-    syncName();
-
-    function syncName() {
-      nameSpan.textContent = saved || bareID;
-      wrap.setAttribute("title", saved
-        ? "点击编辑对外模型 ID（留空恢复官方 ID：" + bareID + "）"
-        : "点击编辑对外模型 ID（留空即用官方 ID：" + bareID + "）");
-    }
-
-    function beginEdit() {
-      var input = document.createElement("input");
-      input.type = "text";
-      input.className = "aliasinput";
-      input.value = initial;
-      // placeholder 用官方 ID：告诉用户「留空就是默认用它」。
-      input.placeholder = bareID;
-      var done = false;
-
-      // finish 提交并回到展示态。focusBack 只在键盘结束时置真，
-      // 失焦提交不抢焦点，避免把用户刚点到的元素顶掉。
-      function finish(commit, focusBack) {
-        if (done) return;
-        done = true;
-        var next = commit ? (input.value || "").trim() : saved;
-        // 预填值原样提交等于没改：不落库，避免把官方 ID 存成一条多余别名。
-        if (next === initial || next === saved) { restore(focusBack); return; }
-        input.disabled = true;
-        api("POST", "/models/alias", { model: key, alias: next }).then(function (data) {
-          if (!data) { restore(focusBack); return; }
-          saved = next;
+    return editableCell({
+      saved: model.alias || "",
+      fallback: function () { return bareID; },
+      prefill: function () { return bareID; },
+      placeholder: bareID,
+      mono: true,
+      title: function (saved) {
+        return saved
+          ? "点击编辑对外模型 ID（留空恢复官方 ID：" + bareID + "）"
+          : "点击编辑对外模型 ID（留空即用官方 ID：" + bareID + "）";
+      },
+      save: function (next) {
+        return api("POST", "/models/alias", { model: key, alias: next }).then(function (data) {
+          if (!data) return false;
           model.alias = next;
-          // 别名的出站翻译已即时生效；这里再同步一次，让 /v1/models 的 ID 跟着变。
           syncModelConfig();
-          restore(focusBack);
-        }).catch(function (err) {
-          // 保存失败：回到原值并提示（错误是需要用户知晓的，成功则静默）。
-          banner("err", err.message);
-          restore(focusBack);
+          return true;
         });
       }
-
-      function restore(focusBack) {
-        cell.textContent = "";
-        syncName();
-        cell.appendChild(wrap);
-        if (focusBack) wrap.focus();
-      }
-
-      input.addEventListener("keydown", function (ev) {
-        if (ev.key === "Enter") { ev.preventDefault(); finish(true, true); }
-        else if (ev.key === "Escape") { ev.preventDefault(); finish(false, true); }
-      });
-      input.addEventListener("blur", function () { finish(true, false); });
-
-      cell.textContent = "";
-      cell.appendChild(input);
-      input.focus();
-      // 光标放开头而非全选：预填是为了补前缀，全选会被第一次按键整体覆盖。
-      input.setSelectionRange(0, 0);
-    }
-
-    wrap.addEventListener("click", beginEdit);
-    wrap.addEventListener("keydown", function (ev) {
-      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); beginEdit(); }
     });
-    return cell;
   }
 
   // selectedModelIDs 取当前勾选的模型（用于批量操作）。

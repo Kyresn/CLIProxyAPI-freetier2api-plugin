@@ -20,6 +20,7 @@ func TestStoreRoundTripPreservesFields(t *testing.T) {
 		s.PromptMode = "append"
 		s.DisabledModels = []string{"vendor:model"}
 		s.ModelAliases = map[string]string{"vendor:model": "alias"}
+		s.AccountAliases = map[string]string{"workbuddycn-u1": "工作号"}
 		s.Checkin["u1"] = CheckinRecord{LastDate: "2026-10-18", Streak: 3}
 		s.Tasks["u1\x1fchat_5"] = TaskRecord{LastStatus: "done", Credit: 10}
 	})
@@ -35,6 +36,9 @@ func TestStoreRoundTripPreservesFields(t *testing.T) {
 	}
 	if len(got.DisabledModels) != 1 || got.ModelAliases["vendor:model"] != "alias" {
 		t.Fatalf("model fields lost: %#v", got)
+	}
+	if got.AccountAliases["workbuddycn-u1"] != "工作号" {
+		t.Fatalf("account aliases lost: %#v", got.AccountAliases)
 	}
 	if got.Checkin["u1"].Streak != 3 || got.Tasks["u1\x1fchat_5"].Credit != 10 {
 		t.Fatalf("records lost: %#v", got)
@@ -56,7 +60,7 @@ func TestStoreCorruptFileStartsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load corrupt: %v", err)
 	}
-	if got.Checkin == nil || got.Tasks == nil || got.ModelAliases == nil {
+	if got.Checkin == nil || got.Tasks == nil || got.ModelAliases == nil || got.AccountAliases == nil {
 		t.Fatalf("empty state not normalized: %#v", got)
 	}
 }
@@ -70,11 +74,13 @@ func TestSnapshotIsDeepCopy(t *testing.T) {
 	store.Mutate(func(s *State) {
 		s.DisabledModels = []string{"a"}
 		s.Checkin["u"] = CheckinRecord{Streak: 1}
+		s.AccountAliases["f-1"] = "工作号"
 	})
 	snap := store.Snapshot()
 	snap.DisabledModels[0] = "changed"
 	snap.Checkin["u"] = CheckinRecord{Streak: 99}
-	if got := store.Snapshot(); got.DisabledModels[0] != "a" || got.Checkin["u"].Streak != 1 {
+	snap.AccountAliases["f-1"] = "changed"
+	if got := store.Snapshot(); got.DisabledModels[0] != "a" || got.Checkin["u"].Streak != 1 || got.AccountAliases["f-1"] != "工作号" {
 		t.Fatalf("snapshot aliases internal state: %#v", got)
 	}
 }

@@ -88,6 +88,13 @@ type State struct {
 	// ModelAliases 是模型别名表：<vendorID>:<官方模型 ID> → 对外别名。
 	ModelAliases map[string]string `json:"model_aliases,omitempty"`
 
+	// AccountAliases 是账号别名表：账号身份（FileID）→ 展示别名。
+	//
+	// 键必须是稳定账号身份，不能用昵称/邮箱：前者跨账号不唯一、上游改一次就变，
+	// 拿它做键会让别名在重登后丢失，或串到另一个账号头上。FileID 只由凭证
+	// 文件名决定，token 刷新与重登都不动它（见 core.Credential.FileID）。
+	AccountAliases map[string]string `json:"account_aliases,omitempty"`
+
 	// RestartPending 标记「已有模型变更，但宿主的模型注册表尚未刷新」。
 	RestartPending bool `json:"restart_pending,omitempty"`
 
@@ -119,12 +126,13 @@ func (s *Store) Configure(dir string) {
 // New 返回一个补齐 map 的空状态。
 func New() *State {
 	return &State{
-		Version:       Version,
-		Checkin:       map[string]CheckinRecord{},
-		Tasks:         map[string]TaskRecord{},
-		Claim:         map[string]ClaimRecord{},
-		ModelAliases:  map[string]string{},
-		TaskSchedules: map[string][]int{},
+		Version:        Version,
+		Checkin:        map[string]CheckinRecord{},
+		Tasks:          map[string]TaskRecord{},
+		Claim:          map[string]ClaimRecord{},
+		ModelAliases:   map[string]string{},
+		AccountAliases: map[string]string{},
+		TaskSchedules:  map[string][]int{},
 	}
 }
 
@@ -196,6 +204,9 @@ func normalize(state *State) {
 	if state.ModelAliases == nil {
 		state.ModelAliases = map[string]string{}
 	}
+	if state.AccountAliases == nil {
+		state.AccountAliases = map[string]string{}
+	}
 }
 
 // Snapshot 返回状态深拷贝，调用方可安全读取。
@@ -245,6 +256,10 @@ func clone(state *State) State {
 	out.ModelAliases = make(map[string]string, len(state.ModelAliases))
 	for key, value := range state.ModelAliases {
 		out.ModelAliases[key] = value
+	}
+	out.AccountAliases = make(map[string]string, len(state.AccountAliases))
+	for key, value := range state.AccountAliases {
+		out.AccountAliases[key] = value
 	}
 	return out
 }

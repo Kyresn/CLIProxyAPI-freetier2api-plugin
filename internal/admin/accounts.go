@@ -54,9 +54,18 @@ func (s *Service) buildStatusPayload(req pluginapi.ManagementRequest) map[string
 
 // accountSummary 是账号概览条目（不含凭证）。
 type accountSummary struct {
-	AuthID          string               `json:"auth_id"`
-	AuthIndex       string               `json:"auth_index"`
-	Label           string               `json:"label"`
+	AuthID    string `json:"auth_id"`
+	AuthIndex string `json:"auth_index"`
+	// FileID 是账号身份（凭据文件名去 .json）：别名的键，也是页面向
+	// /accounts/alias 提交的唯一标识。头两个字段（host 的 auth_id /
+	// auth_index）会随宿主重扫变化，不能拿来当键。
+	FileID string `json:"file_id,omitempty"`
+	// Label 是**展示名**，链：账号别名 → 上游 label → host label → 文件名 → ID。
+	// 别名是第一优先级，未设置时行为与引入别名之前完全一致。
+	Label string `json:"label"`
+	// Alias 是用户自定义别名；空表示未设置。页面据此决定是否跳过 API key
+	// 脱敏（别名是用户起的名字，不是凭证）。
+	Alias           string               `json:"alias,omitempty"`
 	VendorID        string               `json:"vendor_id"`
 	VendorName      string               `json:"vendor_name"`
 	Realm           string               `json:"realm"`
@@ -126,10 +135,14 @@ func (s *Service) listAccountSummaries(ctx context.Context, callbackID string) [
 		entry := account.Entry
 		credential := account.Credential
 		vendor := account.Vendor
+		uid := credential.FileIDValue()
+		alias := strings.TrimSpace(current.AccountAliases[uid])
 		summary := accountSummary{
 			AuthID:          core.FirstNonEmpty(entry.ID, entry.Name),
 			AuthIndex:       entry.AuthIndex,
-			Label:           core.FirstNonEmpty(credential.LabelValue(), entry.Label, entry.Name, entry.ID),
+			FileID:          uid,
+			Alias:           alias,
+			Label:           core.FirstNonEmpty(alias, credential.LabelValue(), entry.Label, entry.Name, entry.ID),
 			VendorID:        vendor.ID(),
 			VendorName:      vendor.Name(),
 			Realm:           credential.RegionValue(),
@@ -150,7 +163,6 @@ func (s *Service) listAccountSummaries(ctx context.Context, callbackID string) [
 		if !modTime.IsZero() {
 			summary.RefreshedAt = modTime.Format(time.RFC3339)
 		}
-		uid := credential.FileIDValue()
 		if record, okRecord := current.Checkin[uid]; okRecord {
 			summary.Checkin = &record
 		} else if record, okLegacy := lookupLegacyCheckin(current, credential); okLegacy {
@@ -371,6 +383,43 @@ func maskedAPIKey(key string) string {
 		return "***"
 	}
 	return trimmed[:4] + "***" + trimmed[len(trimmed)-4:]
+}
+
+// accountAliasRequest 是设置/清除账号别名的请求体。
+type accountAliasRequest struct {
+	FileID string `json:"file_id"`
+	Alias  string `json:"alias"`
+}
+
+// handleAccountAliasRequest 设置或清除某个账号的展示别名。
+//
+// 键用账号身份（FileID）而不是昵称/邮箱：token 刷新、重登都不改凭证文件名，
+// 别名因此自动保留，也不会因为两个账号同昵称而互相覆盖。
+//
+// 别名是纯展示字段（不参与任何 ID 解析），所以允许空格等字符，只做首尾裁剪；
+// 空串表示清除，恢复上游名称。不需要重建宿主模型注册表——账号名只影响本页。
+func (s *Service) handleAccountAliasRequest(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	body, errDecode := decodeRequest[accountAliasRequest](req.Body)
+	if errDecode != nil {
+		return BadJSONRequestResponse()
+	}
+	fileID := strings.TrimSpace(body.FileID)
+	if fileID == "" {
+		return JSONResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "file_id 不能为空"})
+	}
+	alias := strings.TrimSpace(body.Alias)
+	s.deps.MutateState(func(current *state.State) {
+		if alias == "" {
+			delete(current.AccountAliases, fileID)
+			return
+		}
+		if current.AccountAliases == nil {
+			current.AccountAliases = map[string]string{}
+		}
+		current.AccountAliases[fileID] = alias
+	})
+	logger.Info("account %s alias: %q", fileID, alias)
+	return JSONResponse(http.StatusOK, map[string]any{"ok": true, "alias": alias})
 }
 
 func (s *Service) handleCheckinRequest(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {

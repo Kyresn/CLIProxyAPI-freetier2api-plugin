@@ -115,6 +115,15 @@ func (h *Host) AddAccount(authIndex, name, credentialJSON string) {
 	})
 }
 
+// SetAccountCredential 覆盖某个账号的凭证 JSON，账号身份（文件名）不变。
+//
+// 用于模拟 token 刷新 / 重登后宿主重写同一个凭证文件：内容变了，身份没变。
+func (h *Host) SetAccountCredential(authIndex, credentialJSON string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.authJSON[authIndex] = credentialJSON
+}
+
 // SetAuthFilePath 让 host.auth.get 返回凭证的物理文件路径。
 //
 // 真实宿主的 path 不保证绝对：以相对 auth-dir 启动的宿主（EasyCLIProxyAPI

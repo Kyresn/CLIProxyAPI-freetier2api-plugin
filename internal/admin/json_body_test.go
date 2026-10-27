@@ -64,6 +64,7 @@ func TestManagementHandlersRejectMalformedJSON(t *testing.T) {
 	handlers := map[string]func(pluginapi.ManagementRequest) pluginapi.ManagementResponse{
 		"accounts/delete": service.handleAccountDeleteRequest,
 		"accounts/add":    service.handleAccountAddRequest,
+		"accounts/alias":  service.handleAccountAliasRequest,
 		"checkin":         service.handleCheckinRequest,
 		"quotas":          service.handleQuotasRequest,
 		"settings":        service.handleSettingsRequest,

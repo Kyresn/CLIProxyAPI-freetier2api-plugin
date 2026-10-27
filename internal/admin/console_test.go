@@ -557,3 +557,29 @@ func TestConsoleSettingsSyncsModelRegistryImmediately(t *testing.T) {
 		}
 	}
 }
+
+// TestConsoleAccountAliasReusesInlineEditor 锁定账号别名的接线与「只有一份」。
+//
+// 账号别名与模型别名是同一套交互（点击 ✎、回车/失焦保存、Esc 取消），实现
+// 必须只有 editableCell 一份：复制第二份意味着键盘行为、回退策略、错误提示
+// 迟早分叉。账号别名按账号身份 file_id 提交，不用昵称/邮箱。
+func TestConsoleAccountAliasReusesInlineEditor(t *testing.T) {
+	page := Page("/plugins/freetier2api")
+
+	for _, literal := range []string{
+		"function editableCell(opts)", // 共用编辑器
+		"function accountNameCell(account)",
+		"accountNameCell(account)", // 账号列确实用它渲染
+		`api("POST", "/accounts/alias"`,
+		"account.file_id",
+		"account.alias",
+	} {
+		if !strings.Contains(page, literal) {
+			t.Fatalf("console page missing account-alias wiring %q", literal)
+		}
+	}
+
+	if count := strings.Count(page, `input.addEventListener("blur"`); count != 1 {
+		t.Fatalf("inline editing must have exactly one implementation, found %d blur handlers", count)
+	}
+}
