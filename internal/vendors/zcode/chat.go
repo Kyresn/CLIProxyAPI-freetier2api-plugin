@@ -662,7 +662,9 @@ func anthropicToOpenAICompletion(raw []byte, model string) ([]byte, error) {
 			"message":       message,
 			"finish_reason": finishReason(resp.StopReason, len(toolCalls) > 0),
 		}},
-		"usage": resp.Usage.openAI(),
+	}
+	if usage := resp.Usage.openAI(); len(usage) > 0 {
+		out["usage"] = usage
 	}
 	return json.Marshal(out)
 }
@@ -709,11 +711,12 @@ type streamConverter struct {
 	created   int64
 	toolIndex int
 	usage     anthropicUsage
+	finished  bool
 }
 
-// Anthropic input_tokens excludes cache reads/writes. OpenAI prompt_tokens
-// includes both; detail counters are subsets, not additional prompt tokens.
-// Pointers distinguish an omitted cumulative counter from an explicit zero.
+// anthropicUsage 保存 Anthropic 累计计数。input_tokens 不含缓存读写，
+// 转为 OpenAI prompt_tokens 时需包含两者；缓存明细是子集，不再额外累加。
+// 指针用于区分字段缺失与显式零。
 type anthropicUsage struct {
 	InputTokens         *int64 `json:"input_tokens"`
 	OutputTokens        *int64 `json:"output_tokens"`
@@ -730,7 +733,7 @@ func (u *anthropicUsage) merge(value any) {
 	if json.Unmarshal(data, &update) != nil {
 		return
 	}
-	// message_delta counters are cumulative snapshots, never increments.
+	// message_delta 的计数是累计快照，不能按增量相加。
 	if update.InputTokens != nil {
 		u.InputTokens = update.InputTokens
 	}
@@ -841,18 +844,33 @@ func (c *streamConverter) feed(event map[string]any, onChunk func([]byte) error)
 		if stop == "" {
 			return nil
 		}
-		reason := finishReason(stop, c.toolIndex > 0)
-		// This is the internal CPA executor payload: the host observes usage
-		// before protocol translation, independently of client include_usage.
-		// Keep it on the terminal choice so cross-protocol translators receive
-		// the final counters together with finish_reason. Never emit interim
-		// choices:[] snapshots, which clients may interpret as end-of-stream.
-		return onChunk(c.chunkWithUsage(map[string]any{}, &reason, c.usage.openAI()))
+		return c.emitFinish(stop, onChunk)
+
+	case "message_stop":
+		// 部分兼容上游只给 usage、不提供 stop_reason；明确结束时补齐终片。
+		// 正常路径已在 message_delta 发送终片，由 emitFinish 保证不重复。
+		return c.emitFinish("", onChunk)
 
 	case "error":
 		errObj, _ := event["error"].(map[string]any)
 		return fmt.Errorf("上游流式错误: %s", core.FirstNonEmpty(core.RawStringField(errObj, "message"), "unknown"))
 	}
+	return nil
+}
+
+// emitFinish 只投递一次终片；上游没有 usage 时不伪造零计数。
+// 这是 CPA 内部 executor 载荷：宿主先采集 usage，再做协议转换。
+// 将完整计数与 finish_reason 同片投递，不发送中途 choices:[] 快照；
+// 客户端 include_usage 的公开输出策略仍由宿主决定。
+func (c *streamConverter) emitFinish(stop string, onChunk func([]byte) error) error {
+	if c.finished {
+		return nil
+	}
+	reason := finishReason(stop, c.toolIndex > 0)
+	if err := onChunk(c.chunkWithUsage(map[string]any{}, &reason, c.usage.openAI())); err != nil {
+		return err
+	}
+	c.finished = true
 	return nil
 }
 
