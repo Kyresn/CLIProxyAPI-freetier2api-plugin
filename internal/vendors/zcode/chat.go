@@ -193,6 +193,7 @@ func (v *adapter) holdStartPlanSlot(ctx context.Context, cred *Credential) (func
 // 完整的 chunk 序列（含结束分片），否则会一直等后续内容。
 func emitCollapsedCompletion(completion []byte, model string, onChunk func([]byte) error) error {
 	var resp struct {
+		Usage   map[string]any `json:"usage"`
 		Choices []struct {
 			Message      map[string]any `json:"message"`
 			FinishReason string         `json:"finish_reason"`
@@ -237,7 +238,7 @@ func emitCollapsedCompletion(completion []byte, model string, onChunk func([]byt
 		}
 	}
 	reason := core.FirstNonEmpty(resp.Choices[0].FinishReason, "stop")
-	return onChunk(converter.chunk(map[string]any{}, &reason))
+	return onChunk(converter.chunkWithUsage(map[string]any{}, &reason, resp.Usage))
 }
 
 // buildHTTPRequest 把 chat-completions 请求体转成上游 Anthropic 请求。
@@ -618,10 +619,7 @@ func anthropicToOpenAICompletion(raw []byte, model string) ([]byte, error) {
 			Name     string          `json:"name"`
 			Input    json.RawMessage `json:"input"`
 		} `json:"content"`
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
+		Usage anthropicUsage `json:"usage"`
 	}
 	if errUnmarshal := json.Unmarshal(raw, &resp); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode anthropic response: %w", errUnmarshal)
@@ -664,11 +662,7 @@ func anthropicToOpenAICompletion(raw []byte, model string) ([]byte, error) {
 			"message":       message,
 			"finish_reason": finishReason(resp.StopReason, len(toolCalls) > 0),
 		}},
-		"usage": map[string]any{
-			"prompt_tokens":     resp.Usage.InputTokens,
-			"completion_tokens": resp.Usage.OutputTokens,
-			"total_tokens":      resp.Usage.InputTokens + resp.Usage.OutputTokens,
-		},
+		"usage": resp.Usage.openAI(),
 	}
 	return json.Marshal(out)
 }
@@ -714,6 +708,60 @@ type streamConverter struct {
 	chunkID   string
 	created   int64
 	toolIndex int
+	usage     anthropicUsage
+}
+
+// Anthropic input_tokens excludes cache reads/writes. OpenAI prompt_tokens
+// includes both; detail counters are subsets, not additional prompt tokens.
+// Pointers distinguish an omitted cumulative counter from an explicit zero.
+type anthropicUsage struct {
+	InputTokens         *int64 `json:"input_tokens"`
+	OutputTokens        *int64 `json:"output_tokens"`
+	CacheReadTokens     *int64 `json:"cache_read_input_tokens"`
+	CacheCreationTokens *int64 `json:"cache_creation_input_tokens"`
+}
+
+func (u *anthropicUsage) merge(value any) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	var update anthropicUsage
+	if json.Unmarshal(data, &update) != nil {
+		return
+	}
+	// message_delta counters are cumulative snapshots, never increments.
+	if update.InputTokens != nil {
+		u.InputTokens = update.InputTokens
+	}
+	if update.OutputTokens != nil {
+		u.OutputTokens = update.OutputTokens
+	}
+	if update.CacheReadTokens != nil {
+		u.CacheReadTokens = update.CacheReadTokens
+	}
+	if update.CacheCreationTokens != nil {
+		u.CacheCreationTokens = update.CacheCreationTokens
+	}
+}
+
+func (u anthropicUsage) openAI() map[string]any {
+	if u.InputTokens == nil && u.OutputTokens == nil && u.CacheReadTokens == nil && u.CacheCreationTokens == nil {
+		return nil
+	}
+	value := func(p *int64) int64 {
+		if p != nil {
+			return *p
+		}
+		return 0
+	}
+	read, write := value(u.CacheReadTokens), value(u.CacheCreationTokens)
+	input, output := value(u.InputTokens)+read+write, value(u.OutputTokens)
+	out := map[string]any{"prompt_tokens": input, "completion_tokens": output, "total_tokens": input + output}
+	if u.CacheReadTokens != nil || u.CacheCreationTokens != nil {
+		out["prompt_tokens_details"] = map[string]any{"cached_tokens": read, "cache_creation_tokens": write}
+	}
+	return out
 }
 
 func newStreamConverter(model string) *streamConverter {
@@ -740,6 +788,7 @@ func (c *streamConverter) feed(event map[string]any, onChunk func([]byte) error)
 			if model := core.RawStringField(msg, "model"); model != "" {
 				c.model = model
 			}
+			c.usage.merge(msg["usage"])
 		}
 
 	case "content_block_start":
@@ -786,9 +835,19 @@ func (c *streamConverter) feed(event map[string]any, onChunk func([]byte) error)
 		}
 
 	case "message_delta":
+		c.usage.merge(event["usage"])
 		delta, _ := event["delta"].(map[string]any)
-		reason := finishReason(core.RawStringField(delta, "stop_reason"), c.toolIndex > 0)
-		return onChunk(c.chunk(map[string]any{}, &reason))
+		stop := core.RawStringField(delta, "stop_reason")
+		if stop == "" {
+			return nil
+		}
+		reason := finishReason(stop, c.toolIndex > 0)
+		// This is the internal CPA executor payload: the host observes usage
+		// before protocol translation, independently of client include_usage.
+		// Keep it on the terminal choice so cross-protocol translators receive
+		// the final counters together with finish_reason. Never emit interim
+		// choices:[] snapshots, which clients may interpret as end-of-stream.
+		return onChunk(c.chunkWithUsage(map[string]any{}, &reason, c.usage.openAI()))
 
 	case "error":
 		errObj, _ := event["error"].(map[string]any)
@@ -799,6 +858,10 @@ func (c *streamConverter) feed(event map[string]any, onChunk func([]byte) error)
 
 // chunk 组装一条 OpenAI chat.completion.chunk。
 func (c *streamConverter) chunk(delta map[string]any, finishReason *string) []byte {
+	return c.chunkWithUsage(delta, finishReason, nil)
+}
+
+func (c *streamConverter) chunkWithUsage(delta map[string]any, finishReason *string, usage map[string]any) []byte {
 	var finish any
 	if finishReason != nil {
 		finish = *finishReason
@@ -813,6 +876,9 @@ func (c *streamConverter) chunk(delta map[string]any, finishReason *string) []by
 			"delta":         delta,
 			"finish_reason": finish,
 		}},
+	}
+	if len(usage) > 0 {
+		payload["usage"] = usage
 	}
 	encoded, _ := json.Marshal(payload)
 	return encoded
