@@ -31,7 +31,7 @@ func TestZCodeExecutorStreamUsage(t *testing.T) {
 		{"include_usage=true", `,"stream_options":{"include_usage":true}`},
 		{"include_usage=false", `,"stream_options":{"include_usage":false}`},
 	} {
-		for _, response := range []string{"sse", "message_stop", "json"} {
+		for _, response := range []string{"sse", "message_stop", "eof", "json"} {
 			t.Run(option.name+"/"+response, func(t *testing.T) {
 				host := installFakeHost(t)
 				setupTestPlugin(t)
@@ -48,18 +48,29 @@ func TestZCodeExecutorStreamUsage(t *testing.T) {
 						return fakeUpstreamResponse{Status: 200, Header: map[string][]string{"Content-Type": {"application/json"}},
 							Body: `{"id":"msg_1","model":"GLM-5.3-Flash","stop_reason":"end_turn","content":[{"type":"text","text":"OK"}],"usage":{"input_tokens":100,"cache_read_input_tokens":80,"cache_creation_input_tokens":20,"output_tokens":9}}`}
 					}
-					terminal := `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}`
-					if response == "message_stop" {
-						terminal = `data: {"type":"message_delta","usage":{"output_tokens":9}}`
+					events := []string{
+						`data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":100,"cache_read_input_tokens":80,"cache_creation_input_tokens":20}}}`,
+						`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"OK"}}`,
+						`data: {"type":"message_delta","delta":{},"usage":{"output_tokens":4}}`,
+					}
+					switch response {
+					case "sse":
+						// 标准收尾：带 stop_reason 的 message_delta 之后紧跟 message_stop。
+						events = append(events,
+							`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}`,
+							`data: {"type":"message_stop"}`)
+					case "message_stop":
+						// 兼容上游：不给 stop_reason，靠 message_stop 收尾。
+						events = append(events,
+							`data: {"type":"message_delta","usage":{"output_tokens":9}}`,
+							`data: {"type":"message_stop"}`)
+					case "eof":
+						// 更差的上游：只给 usage，既无 stop_reason 也无 message_stop，
+						// 直接关流。终片必须由 ChatStream 在 EOF 处补齐。
+						events = append(events, `data: {"type":"message_delta","usage":{"output_tokens":9}}`)
 					}
 					return fakeUpstreamResponse{Status: 200, Header: map[string][]string{"Content-Type": {"text/event-stream"}},
-						Body: strings.Join([]string{
-							`data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":100,"cache_read_input_tokens":80,"cache_creation_input_tokens":20}}}`,
-							`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"OK"}}`,
-							`data: {"type":"message_delta","delta":{},"usage":{"output_tokens":4}}`,
-							terminal,
-							`data: {"type":"message_stop"}`, "",
-						}, "\n\n")}
+						Body: strings.Join(append(events, ""), "\n\n")}
 				})
 				callMethod(t, pluginabi.MethodExecutorExecuteStream, app.ExecutorRPCRequest{
 					ExecutorRequest: pluginapi.ExecutorRequest{

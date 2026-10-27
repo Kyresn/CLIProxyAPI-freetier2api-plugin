@@ -238,7 +238,8 @@ func TestConvertResponseMapsToolUse(t *testing.T) {
 	}
 }
 
-// collectChunks 驱动流式转换器并收集所有产出。
+// collectChunks 驱动一次完整流并收集所有产出，与 ChatStream 的生命周期一致：
+// emitStart → 逐条 feed → EOF 时补齐终片（emitFinish 幂等，正常结束不重复）。
 func collectChunks(t *testing.T, events []string) []map[string]any {
 	t.Helper()
 	converter := newStreamConverter("GLM-5.3")
@@ -262,6 +263,9 @@ func collectChunks(t *testing.T, events []string) []map[string]any {
 		if errFeed := converter.feed(parsed, appendChunk); errFeed != nil {
 			t.Fatalf("feed: %v", errFeed)
 		}
+	}
+	if errFinish := converter.emitFinish("", appendChunk); errFinish != nil {
+		t.Fatalf("emit finish: %v", errFinish)
 	}
 	return out
 }
@@ -579,7 +583,7 @@ func TestStreamUsageCumulativeAndTerminalOnly(t *testing.T) {
 			}
 		}
 	}
-	u := chunkUsage(t, chunks[len(chunks)-1])
+	u := usageOf(t, chunks[len(chunks)-1])
 	assertUsage(t, u, 200, 9, 209)
 	details := u["prompt_tokens_details"].(map[string]any)
 	if details["cached_tokens"] != float64(80) || details["cache_creation_tokens"] != float64(20) {
@@ -592,7 +596,7 @@ func TestStreamUsageExplicitZeroAndAbsent(t *testing.T) {
 		`{"type":"message_start","message":{"usage":{"input_tokens":12,"cache_read_input_tokens":5,"cache_creation_input_tokens":2}}}`,
 		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"cache_read_input_tokens":0,"output_tokens":3}}`,
 	})
-	assertUsage(t, chunkUsage(t, chunks[len(chunks)-1]), 2, 3, 5)
+	assertUsage(t, usageOf(t, chunks[len(chunks)-1]), 2, 3, 5)
 	for _, chunk := range collectChunks(t, []string{`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`}) {
 		if _, ok := chunk["usage"]; ok {
 			t.Fatalf("invented usage: %v", chunk)
@@ -611,7 +615,7 @@ func TestStreamUsageToolCall(t *testing.T) {
 	if last["choices"].([]any)[0].(map[string]any)["finish_reason"] != "tool_calls" {
 		t.Fatalf("tool finish lost: %v", last)
 	}
-	assertUsage(t, chunkUsage(t, last), 10, 7, 17)
+	assertUsage(t, usageOf(t, last), 10, 7, 17)
 }
 
 func TestNonstreamAndCollapsedUsage(t *testing.T) {
@@ -624,7 +628,7 @@ func TestNonstreamAndCollapsedUsage(t *testing.T) {
 	if err := json.Unmarshal(converted, &document); err != nil {
 		t.Fatal(err)
 	}
-	assertUsage(t, chunkUsage(t, document), 200, 9, 209)
+	assertUsage(t, usageOf(t, document), 200, 9, 209)
 	var chunks []map[string]any
 	err = emitCollapsedCompletion(converted, "GLM-5.3-Flash", func(b []byte) error {
 		var chunk map[string]any
@@ -642,7 +646,7 @@ func TestNonstreamAndCollapsedUsage(t *testing.T) {
 			t.Fatalf("collapsed interim usage: %v", chunk)
 		}
 	}
-	assertUsage(t, chunkUsage(t, chunks[len(chunks)-1]), 200, 9, 209)
+	assertUsage(t, usageOf(t, chunks[len(chunks)-1]), 200, 9, 209)
 }
 
 func TestStreamUsageZeroSnapshot(t *testing.T) {
@@ -650,7 +654,7 @@ func TestStreamUsageZeroSnapshot(t *testing.T) {
 		`{"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":4}}}`,
 		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":0}}`,
 	})
-	assertUsage(t, chunkUsage(t, chunks[len(chunks)-1]), 0, 0, 0)
+	assertUsage(t, usageOf(t, chunks[len(chunks)-1]), 0, 0, 0)
 }
 
 func TestStreamUsageMessageStopFallback(t *testing.T) {
@@ -677,7 +681,7 @@ func TestStreamUsageMessageStopFallback(t *testing.T) {
 			if choice["finish_reason"] != want {
 				t.Fatalf("fallback finish=%v, want %s", choice["finish_reason"], want)
 			}
-			assertUsage(t, chunkUsage(t, chunk), 10, 7, 17)
+			assertUsage(t, usageOf(t, chunk), 10, 7, 17)
 		}
 		if finishes != 1 {
 			t.Fatalf("fallback finishes=%d, want 1", finishes)
@@ -692,6 +696,25 @@ func TestStreamUsageMessageStopFallback(t *testing.T) {
 	if len(chunks) != 2 || chunks[1]["choices"].([]any)[0].(map[string]any)["finish_reason"] != "length" {
 		t.Fatalf("normal terminal duplicated or overwritten: %v", chunks)
 	}
+}
+
+func TestStreamUsageEOFFallback(t *testing.T) {
+	// 上游既不给 stop_reason 也不发 message_stop，只给 usage 就关流：
+	// ChatStream 必须在 EOF 处补终片，且带上已合并的 usage。
+	chunks := collectChunks(t, []string{
+		`{"type":"message_start","message":{"usage":{"input_tokens":10}}}`,
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"OK"}}`,
+		`{"type":"message_delta","usage":{"output_tokens":7}}`,
+	})
+	if len(chunks) != 3 {
+		t.Fatalf("expected role/content/finish, got %v", chunks)
+	}
+	last := chunks[len(chunks)-1]
+	choice := last["choices"].([]any)[0].(map[string]any)
+	if choice["finish_reason"] != "stop" {
+		t.Fatalf("EOF fallback finish = %v, want stop", choice["finish_reason"])
+	}
+	assertUsage(t, usageOf(t, last), 10, 7, 17)
 }
 
 func TestMissingUsageOmittedInAllResponsePaths(t *testing.T) {
@@ -753,11 +776,12 @@ func assertUsage(t *testing.T, usage map[string]any, input, output, total float6
 	}
 }
 
-func chunkUsage(t *testing.T, chunk map[string]any) map[string]any {
+// usageOf 取出 payload 的 usage 字段；流式 chunk 与非流式完整文档共用同一形态。
+func usageOf(t *testing.T, payload map[string]any) map[string]any {
 	t.Helper()
-	usage, ok := chunk["usage"].(map[string]any)
+	usage, ok := payload["usage"].(map[string]any)
 	if !ok {
-		t.Fatalf("missing usage: %v", chunk)
+		t.Fatalf("missing usage: %v", payload)
 	}
 	return usage
 }

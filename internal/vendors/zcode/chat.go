@@ -100,7 +100,12 @@ func ChatStream(ctx context.Context, baseURL string, req ChatRequest, onChunk fu
 	if errStart := converter.emitStart(onChunk); errStart != nil {
 		return errStart
 	}
-	return parseAnthropicSSE(resp.Body, converter, onChunk)
+	if errParse := parseAnthropicSSE(resp.Body, converter, onChunk); errParse != nil {
+		return errParse
+	}
+	// 兼容上游不发 message_stop 直接关流：与 emitStart 对称，由持有流生命周期的
+	// 调用方补齐终片。emitFinish 幂等，正常结束路径不会重复发送。
+	return converter.emitFinish("", onChunk)
 }
 
 // ---- Start Plan 出站闸门 ----
