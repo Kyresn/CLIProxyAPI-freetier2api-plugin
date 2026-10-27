@@ -16,4 +16,6 @@ type Config struct {
 	AutoCheckinAt string
 	// AutoTasks 报告是否每日自动跑任务闭环。
 	AutoTasks bool
+	// CheckinHistoryLimit 是每个账号保留的签到历史条数（<1 时用默认值）。
+	CheckinHistoryLimit int
 }

@@ -17,7 +17,7 @@ If this project helps you, a Star would mean a lot.
 - Native integration with CLIProxyAPI's Anthropic `/v1/messages`, OpenAI `/v1/chat/completions`, and OpenAI `/v1/responses` endpoints without running a separate gateway service
 - Supports 16 free-tier provider instances across 8 vendor families (AutoClaw CN/Global and Raccoon included) with strict per-vendor credential isolation (capped at 10 accounts per provider)
 - Dynamic model catalog discovery, custom model aliases, and cross-provider load balancing / failover
-- Built-in single-page Web console for OAuth device login, localhost callback paste, API Key import, account aliases, quota tracking, model toggling, and live logs
+- Built-in single-page Web console for OAuth device login, localhost callback paste, API Key import, account aliases, quota tracking, check-in history, model toggling, and live logs
 - Automated daily check-in, automated daily tasks, and token keepalive refresh
 - Pure Go standard library implementation with zero third-party runtime dependencies
 
@@ -129,6 +129,7 @@ Configure under `plugins.configs.freetier2api` in `config.yaml` (runtime setting
 | `auto_checkin` | bool | `true` | Enable automated daily check-in |
 | `auto_checkin_at` | string | `10:00` | Daily check-in time (`HH:MM`, local time) |
 | `auto_tasks` | bool | `true` | Enable automated daily tasks |
+| `checkin_history_limit` | int | `30` | Check-in records kept per account (`<=0` falls back to 30; expandable in the console) |
 | `prompt_mode` | string | `passthrough` | System prompt filter mode: `passthrough` / `custom` / `append` |
 | `model_name_tag` | string | `off` | Channel tag on model IDs: `off` (default) / `prefix` / `suffix`. When enabled, every vendor model gets a vendor prefix/suffix in its public ID (e.g. `zcode-GLM-5.3`) so same-name models can be pinned to a channel; tags are per-vendor, not per-account. Once tagged, same-name models are no longer merged across vendors. Takes effect after the host rebuilds its model registry (restart or credential reload; the console shows a restart-pending hint) |
 | `disabled_models` | string / list | empty | Disabled models (`vendor:model` or bare name) |

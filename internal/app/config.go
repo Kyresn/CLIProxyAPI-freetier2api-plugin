@@ -138,5 +138,7 @@ func taskConfig(cfg admin.PluginConfig) tasks.Config {
 		AutoCheckin:   cfg.AutoCheckin,
 		AutoCheckinAt: cfg.AutoCheckinAt,
 		AutoTasks:     cfg.AutoTasks,
+
+		CheckinHistoryLimit: cfg.CheckinHistoryLimit,
 	}
 }

@@ -17,7 +17,7 @@
 - 复用宿主 Anthropic `/v1/messages`、OpenAI `/v1/chat/completions` 与 OpenAI `/v1/responses` 接口，无需额外部署独立网关
 - 支持 8 大体系共 16 个国内外免费额度供应商实例（AutoClaw 国内/国际与小浣熊已接入），凭证严格按供应商隔离（单供应商上限 10 个账号）
 - 模型清单动态探测、自定义模型别名与跨供应商同名模型自动负载均衡/故障转移
-- 内嵌单页 Web 控制台：支持 OAuth 设备授权 / 本地回调粘贴 / API Key 添加账号、账号自定义别名、额度可视化、模型启停与运行日志
+- 内嵌单页 Web 控制台：支持 OAuth 设备授权 / 本地回调粘贴 / API Key 添加账号、账号自定义别名、额度可视化、签到历史回溯、模型启停与运行日志
 - 支持每日自动签到、每日自动任务与 Token 自动续期保活
 - 纯 Go 标准库实现，零第三方运行时依赖
 
@@ -129,6 +129,7 @@ curl http://localhost:8317/v1/messages \
 | `auto_checkin` | bool | `true` | 每日自动签到开关 |
 | `auto_checkin_at` | string | `10:00` | 每日自动签到执行时间（`HH:MM`） |
 | `auto_tasks` | bool | `true` | 每日自动任务开关 |
+| `checkin_history_limit` | int | `30` | 每个账号保留的签到历史条数（`<=0` 用默认值 30；控制台签到列可展开查看） |
 | `prompt_mode` | string | `passthrough` | 提示词防御模式：`passthrough`（透传）/ `custom`（替换）/ `append`（追加） |
 | `model_name_tag` | string | `off` | 模型名渠道标识：`off`（默认）/ `prefix` / `suffix`。开启后各供应商的模型对外 ID 自动带渠道前缀或后缀（如 `zcode-GLM-5.3`），同名模型可按渠道定点选择；标识按供应商统一生成、不区分账号。改动后需宿主重建模型注册表生效（重启或等凭据重载，控制台会提示「待生效」） |
 | `disabled_models` | string / list | 空 | 禁用模型列表（支持 `vendor:model` 或裸名，与控制台勾选合并） |

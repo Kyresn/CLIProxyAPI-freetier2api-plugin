@@ -118,3 +118,19 @@ func TestDecodeModelNameTag(t *testing.T) {
 		t.Fatalf("default = %q", got)
 	}
 }
+
+func TestDecodeCheckinHistoryLimit(t *testing.T) {
+	if got := DefaultPluginConfig().CheckinHistoryLimit; got != 30 {
+		t.Fatalf("默认签到历史条数 = %d, 期望 30", got)
+	}
+	cfg, err := DecodePluginConfig([]byte("checkin_history_limit: 7\n"), DefaultPluginConfig())
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if cfg.CheckinHistoryLimit != 7 {
+		t.Fatalf("checkin_history_limit = %d, 期望 7", cfg.CheckinHistoryLimit)
+	}
+	if _, errBad := DecodePluginConfig([]byte("checkin_history_limit: lots\n"), DefaultPluginConfig()); errBad == nil {
+		t.Fatal("非数字的 checkin_history_limit 必须报错，而不是静默回落到默认值")
+	}
+}

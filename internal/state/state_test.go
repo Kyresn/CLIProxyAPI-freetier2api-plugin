@@ -102,3 +102,35 @@ func TestMutateIsConcurrentSafe(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestCheckinHistoryKeyRequiresVendorAndAccount(t *testing.T) {
+	if got := CheckinHistoryKey("qodercn", "qodercn-user"); got != "qodercn\x00qodercn-user" {
+		t.Fatalf("key = %q, 期望 vendor + 账号身份", got)
+	}
+	// 身份不完整时返回空键：调用方据此放弃落库，而不是写出一个会被互相覆盖的键。
+	if key := CheckinHistoryKey("", "qodercn-user"); key != "" {
+		t.Fatalf("缺供应商时 key = %q, 期望空", key)
+	}
+	if key := CheckinHistoryKey("qodercn", "  "); key != "" {
+		t.Fatalf("缺账号身份时 key = %q, 期望空", key)
+	}
+}
+
+func TestSnapshotCopiesCheckinHistory(t *testing.T) {
+	store := NewStore()
+	store.Configure(t.TempDir())
+	if _, err := store.Load(); err != nil {
+		t.Fatal(err)
+	}
+	key := CheckinHistoryKey("qodercn", "u1")
+	store.Mutate(func(s *State) {
+		s.CheckinHistory[key] = []CheckinHistoryEntry{{RunAt: "2026-10-25T10:00:01Z", Status: "success", Credit: 100}}
+	})
+
+	snap := store.Snapshot()
+	snap.CheckinHistory[key][0].Status = "error"
+	got := store.Snapshot().CheckinHistory[key]
+	if len(got) != 1 || got[0].Status != "success" {
+		t.Fatalf("snapshot 与内部状态共享了历史切片: %#v", got)
+	}
+}

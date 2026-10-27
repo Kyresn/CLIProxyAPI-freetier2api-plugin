@@ -224,19 +224,11 @@ func (s *Service) runCheckinAll(ctx context.Context) {
 		if !core.SupportsCheckinFor(account.vendor, account.credential) {
 			return nil
 		}
-		checkin, okCheckin := core.As[core.CheckinProvider](account.vendor)
-		if !okCheckin {
-			return nil
-		}
-		result, errCheckin := checkin.Checkin(ctx, account.credential)
+		result, errCheckin := s.Checkin(ctx, account.vendor, account.credential, CheckinTriggerSchedule)
 		if errCheckin != nil {
 			logger.Error("checkin %s: %v", account.label(), errCheckin)
 			return nil
 		}
-		if result == nil {
-			return nil
-		}
-		s.recordCheckinResult(account.credential, result)
 		switch {
 		case result.NotRecorded:
 			// 本次没真正领到（窗口未开启 / 领取被拒 / 未确认发放）。
@@ -736,44 +728,6 @@ func (s *Service) activityStatusForAccounts(ctx context.Context, callbackID stri
 	return out
 }
 
-// todayString 返回当前日期（本地时钟）。
-func (s *Service) todayString() string { return s.deps.Now().Format("2006-01-02") }
-
 func taskStateKey(uid, code string) string {
 	return strings.TrimSpace(uid) + "\x1f" + strings.TrimSpace(code)
-}
-
-// RecordCheckin 把一次签到结果写进状态（供页面展示）。
-//
-// 管理接口与调度器共用这一份实现，避免状态写入逻辑出现两份。
-func (s *Service) RecordCheckin(credential *core.Credential, result *core.CheckinResult) {
-	s.recordCheckinResult(credential, result)
-}
-
-func (s *Service) recordCheckinResult(credential *core.Credential, result *core.CheckinResult) {
-	if credential == nil || result == nil {
-		return
-	}
-	uid := credential.FileIDValue()
-	if uid == "" {
-		return
-	}
-	// 供应商显式声明「本次未完成今日签到」时不落库：把「上游窗口未开启」
-	// 之类的状态记成今日已签到，会让页面显示假性成功，而上游窗口错过
-	// 不补领——用户以为领到了，实际积分永远拿不到。
-	if result.NotRecorded {
-		return
-	}
-	today := s.todayString()
-	s.deps.MutateState(func(current *state.State) {
-		record := current.Checkin[uid]
-		record.LastDate = today
-		if result.Credit > 0 {
-			record.Credit = result.Credit
-		}
-		if result.Energy > 0 {
-			record.Energy = result.Energy
-		}
-		current.Checkin[uid] = record
-	})
 }

@@ -927,6 +927,42 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       }
     });
   }
+
+  // checkinStatusPill 把签到历史的状态映射成胶囊：成功（绿）/ 已签到（中性）/ 失败（红）。
+  //
+  // 后端只给 success / already / error 三种状态。NotRecorded（上游窗口未开启、
+  // 领取被拒）也被归为 error：它同样「本次没领到」，不能显示成成功。
+  function checkinStatusPill(status) {
+    if (status === "success") return pill("成功", "ok");
+    if (status === "already") return pill("已签到");
+    return pill("失败", "err");
+  }
+
+  // buildCheckinHistoryRow 构造可展开的签到历史行（后端已按新→旧排好序）。
+  //
+  // 每次「什么时候、以什么状态、为什么失败」都由后端历史提供：失败明细过去
+  // 只活在几秒钟的横幅里，事后完全无从追溯。
+  function buildCheckinHistoryRow(history) {
+    var tr = el("tr");
+    tr.hidden = true;
+    var cell = el("td");
+    cell.colSpan = 8;
+    // 说明文字可能很长（上游报错原文），不跟随表格的 nowrap。
+    cell.style.whiteSpace = "normal";
+    history.forEach(function (entry) {
+      var line = el("div", null, "hint");
+      line.appendChild(el("span", entry.run_at ? new Date(entry.run_at).toLocaleString() : "-"));
+      line.appendChild(document.createTextNode("  "));
+      line.appendChild(checkinStatusPill(entry.status));
+      line.appendChild(el("span", entry.trigger === "schedule" ? "  定时" : "  手动", "muted"));
+      if (entry.message) line.appendChild(el("span", "  " + entry.message));
+      if (entry.credit) line.appendChild(el("span", "  +" + entry.credit, "muted"));
+      cell.appendChild(line);
+    });
+    tr.appendChild(cell);
+    return tr;
+  }
+
   function renderAccounts(status) {
     var host = document.getElementById("accounts");
     host.textContent = "";
@@ -959,6 +995,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 
     accounts.forEach(function (account) {
       var row = el("tr");
+      // historyRow 是该账号的展开行（无历史或未展开时为 null / hidden）。
+      var historyRow = null;
       var vendor = vendorLabel(account.vendor_id, account.realm);
       var vendorCell = el("td");
       vendorCell.appendChild(pill(vendor, vendorChipClass(account.vendor_id, vendor)));
@@ -988,9 +1026,22 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         if (!supportsCheckin) {
           row.appendChild(el("td", "无签到活动", "muted"));
         } else {
-          row.appendChild(el("td", checkin.last_date
+          var checkinCell = el("td", checkin.last_date
             ? (checkin.last_date + (checkin.streak ? " · 连续 " + checkin.streak + " 天" : ""))
-            : "未签到"));
+            : "未签到");
+          var history = account.checkin_history || [];
+          if (history.length) {
+            var historyBtn = el("button", "历史 " + history.length, "act");
+            historyBtn.type = "button";
+            historyBtn.title = "展开该账号最近 " + history.length + " 次签到";
+            historyBtn.style.marginLeft = "8px";
+            historyRow = buildCheckinHistoryRow(history);
+            historyBtn.addEventListener("click", (function (target) {
+              return function () { target.hidden = !target.hidden; };
+            })(historyRow));
+            checkinCell.appendChild(historyBtn);
+          }
+          row.appendChild(checkinCell);
         }
       }
 
@@ -1055,6 +1106,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       row.appendChild(actionCell);
 
       table.appendChild(row);
+      // 展开行紧随账号行：展开/收起只影响这一个账号，不重排整张表。
+      if (historyRow) table.appendChild(historyRow);
     });
     host.appendChild(table);
 

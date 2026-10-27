@@ -212,6 +212,7 @@ func (a *App) configFields() []pluginapi.ConfigField {
 		{Name: "auto_checkin", Type: pluginapi.ConfigFieldTypeBoolean, Description: "是否每日自动签到。"},
 		{Name: "auto_checkin_at", Type: pluginapi.ConfigFieldTypeString, Description: "自动签到时间（HH:MM）。"},
 		{Name: "auto_tasks", Type: pluginapi.ConfigFieldTypeBoolean, Description: "是否每日自动跑任务闭环。"},
+		{Name: "checkin_history_limit", Type: pluginapi.ConfigFieldTypeInteger, Description: "每个账号保留的签到历史条数，默认 30。"},
 	}
 	for _, vendor := range a.registry.Vendors() {
 		if provider, ok := core.As[core.ConfigFieldsProvider](vendor); ok {

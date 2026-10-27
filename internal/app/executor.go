@@ -21,6 +21,7 @@ import (
 	"freetier2api-plugin/internal/core"
 	"freetier2api-plugin/internal/hostbridge"
 	"freetier2api-plugin/internal/logger"
+	"freetier2api-plugin/internal/tasks"
 )
 
 const (
@@ -443,20 +444,9 @@ func (a *App) handleQuotaReset(request []byte) ([]byte, error) {
 			Message: message,
 		})
 	}
-	checkin, okCheckin := core.As[core.CheckinProvider](vendor)
-	if !okCheckin {
-		return core.OKEnvelope(pluginapi.QuotaResetResponse{
-			Success: false,
-			Message: "本供应商不提供签到；额度按上游周期自动重置",
-		})
-	}
-
-	result, errCheckin := checkin.Checkin(ctx, credential)
+	result, errCheckin := a.tasks.Checkin(ctx, vendor, credential, tasks.CheckinTriggerManual)
 	if errCheckin != nil {
 		return nil, core.ToPluginError(errCheckin)
-	}
-	if result == nil {
-		return core.OKEnvelope(pluginapi.QuotaResetResponse{Success: false, Message: "签到未返回结果"})
 	}
 	// NotRecorded 表示这次签到没有真正完成（上游窗口未开启、领取被拒、
 	// 未确认发放）。此时不能报成功——否则宿主与控制台都会显示「已重置」

@@ -16,6 +16,7 @@ import (
 	"freetier2api-plugin/internal/hostbridge"
 	"freetier2api-plugin/internal/logger"
 	"freetier2api-plugin/internal/state"
+	"freetier2api-plugin/internal/tasks"
 )
 
 // StatusPayload 构造账号状态概览（导出给根层测试/兼容包装）。
@@ -81,6 +82,8 @@ type accountSummary struct {
 	// Claim 是该账号的套餐领取状态；SupportsClaim 为 false 时前端不渲染入口。
 	Claim         *state.ClaimRecord `json:"claim,omitempty"`
 	SupportsClaim bool               `json:"supports_claim"`
+	// CheckinHistory 是该账号最近的签到执行记录（新→旧，最多 checkin_history_limit 条）。
+	CheckinHistory []state.CheckinHistoryEntry `json:"checkin_history,omitempty"`
 }
 
 // quotaCacheKey 返回额度缓存的唯一键：供应商 + 账号身份（FileID 优先，AuthID 兜底）。
@@ -168,6 +171,7 @@ func (s *Service) listAccountSummaries(ctx context.Context, callbackID string) [
 		} else if record, okLegacy := lookupLegacyCheckin(current, credential); okLegacy {
 			summary.Checkin = &record
 		}
+		summary.CheckinHistory = current.CheckinHistory[state.CheckinHistoryKey(vendor.ID(), uid)]
 		if record, okRecord := current.Claim[uid]; okRecord {
 			claim := record
 			summary.Claim = &claim
@@ -438,18 +442,10 @@ func (s *Service) handleCheckinRequest(req pluginapi.ManagementRequest) pluginap
 				reason := core.FirstNonEmpty(core.CheckinUnsupportedReason(vendor, credential), "本账号不支持签到")
 				return accountActionOutcome{Message: reason, Skipped: true}, nil
 			}
-			checkin, okCheckin := core.As[core.CheckinProvider](vendor)
-			if !okCheckin {
-				return accountActionOutcome{}, fmt.Errorf("本供应商不提供签到")
-			}
-			result, errCheckin := checkin.Checkin(ctx, credential)
+			result, errCheckin := s.tasks.Checkin(ctx, vendor, credential, tasks.CheckinTriggerManual)
 			if errCheckin != nil {
 				return accountActionOutcome{}, errCheckin
 			}
-			if result == nil {
-				return accountActionOutcome{}, fmt.Errorf("签到未返回结果")
-			}
-			s.tasks.RecordCheckin(credential, result)
 			// NotRecorded 表示这次签到**没有真正完成**（上游窗口未开启、
 			// 领取被拒、未确认发放）。如实标成「跳过」而不是成功，控制台
 			// 就不会显示「签到完成」而用户实际没拿到积分。

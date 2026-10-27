@@ -583,3 +583,22 @@ func TestConsoleAccountAliasReusesInlineEditor(t *testing.T) {
 		t.Fatalf("inline editing must have exactly one implementation, found %d blur handlers", count)
 	}
 }
+
+// TestConsolePageShowsCheckinHistory 验证签到历史在控制台可展开查看。
+//
+// 横幅只显示几秒钟，失败账号与报错原文必须能在页面上事后回溯；历史入口挂在
+// 每个账号自己的签到列上（同一张表、同一份 /status 数据，不再发额外请求）。
+func TestConsolePageShowsCheckinHistory(t *testing.T) {
+	page := Page("/plugins/freetier2api")
+
+	for _, literal := range []string{
+		"account.checkin_history",      // 历史来自 /status 的账号条目
+		"buildCheckinHistoryRow",       // 展开行的构造点
+		`entry.trigger === "schedule"`, // 触发方式要在页面上区分定时/手动
+		"checkinStatusPill",            // 三种状态各自着色
+	} {
+		if !strings.Contains(page, literal) {
+			t.Fatalf("console page is missing the checkin history UI (%s)", literal)
+		}
+	}
+}
