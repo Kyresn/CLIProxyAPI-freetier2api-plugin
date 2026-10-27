@@ -88,8 +88,13 @@ func (v *adapter) StaticModels(ctx context.Context) ([]pluginapi.ModelInfo, erro
 		return nil, errModels
 	}
 	// 上游只给 ID；上下文/输出/档位等元数据由 models.dev 目录按 ID 合并。
+	// 筛选也依赖目录单价，必须在 enrich 之后做。
 	v.modelsDev.enrich(ctx, models)
-	return v.modelsToPluginAPI(models), nil
+	catalog, errCatalog := v.modelsDev.fetch(ctx)
+	if errCatalog != nil {
+		logger.Info("opencodezen: models.dev catalog unavailable, keep all models: %v", errCatalog)
+	}
+	return v.modelsToPluginAPI(freeOnly(models, catalog)), nil
 }
 
 // ModelsForAuth 返回该凭证可用的模型。
@@ -113,7 +118,11 @@ func (v *adapter) ModelsForAuth(ctx context.Context, cred *core.Credential) ([]p
 		return nil, nil
 	}
 	v.modelsDev.enrich(ctx, models)
-	return v.modelsToPluginAPI(models), nil
+	catalog, errCatalog := v.modelsDev.fetch(ctx)
+	if errCatalog != nil {
+		logger.Info("opencodezen: models.dev catalog unavailable, keep all models: %v", errCatalog)
+	}
+	return v.modelsToPluginAPI(freeOnly(models, catalog)), nil
 }
 
 // modelsToPluginAPI 把上游模型条目转成宿主契约类型，顺带记下倍率表。
@@ -173,9 +182,10 @@ func (v *adapter) Execute(ctx context.Context, cred *core.Credential, req *core.
 		return nil, errNative
 	}
 	payload, errChat := Chat(ctx, v.baseURL, ChatRequest{
-		APIKey: native.APIKey,
-		Body:   req.Payload,
-		Stream: false,
+		APIKey:  native.APIKey,
+		Body:    req.Payload,
+		Stream:  false,
+		Catalog: v.catalog(ctx),
 	})
 	if errChat != nil {
 		return nil, core.ToPluginError(errChat)
@@ -196,15 +206,29 @@ func (v *adapter) ExecuteStream(ctx context.Context, cred *core.Credential, req 
 		return errNative
 	}
 	resp, errStream := ChatStream(ctx, v.baseURL, ChatRequest{
-		APIKey: native.APIKey,
-		Body:   req.Payload,
-		Stream: true,
+		APIKey:  native.APIKey,
+		Body:    req.Payload,
+		Stream:  true,
+		Catalog: v.catalog(ctx),
 	})
 	if errStream != nil {
 		return core.ToPluginError(errStream)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	return hostbridge.ForwardRawSSE(resp.Body, sink.Emit)
+}
+
+// catalog 取 models.dev 目录，用于按单价判定免费层。
+//
+// 目录不可用时返回空表，isFreeTierModel 会退回按模型名判定——拿不到价格
+// 不该让请求失败，只是免费判定退化成旧口径。
+func (v *adapter) catalog(ctx context.Context) modelsDevCatalog {
+	catalog, errCatalog := v.modelsDev.fetch(ctx)
+	if errCatalog != nil {
+		logger.Info("opencodezen: models.dev catalog unavailable, fall back to name-based free detection: %v", errCatalog)
+		return nil
+	}
+	return catalog
 }
 
 // probeAPIKey 借一个本供应商的可用凭证取 API key（供模型探测用）。

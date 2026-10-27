@@ -62,7 +62,7 @@ func FetchModels(ctx context.Context, baseURL, apiKey string) ([]Model, error) {
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, fmt.Errorf("api key is required to list models")
 	}
-	endpoint := BaseURL(baseURL) + ModelsPath
+	endpoint := ModelsBaseURLFor(baseURL) + ModelsPath
 	req, errReq := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if errReq != nil {
 		return nil, fmt.Errorf("build models request: %w", errReq)
@@ -89,6 +89,10 @@ func FetchModels(ctx context.Context, baseURL, apiKey string) ([]Model, error) {
 //
 // 上游返回 OpenAI 风格的 {"data":[{"id":...}]}，但历史上也出现过裸数组
 // 与 {"models":[...]} 两种形态，因此三种都接受。
+//
+// **不按名字过滤**：清单只反映「上游有哪些模型」，是否免费由 models.dev
+// 目录的单价在请求期判定（见 isFreeTierModel）。按名字筛掉不带 "-free"
+// 的零价模型会漏掉 big-pickle 这类官方默认模型。
 func parseModels(body []byte) ([]Model, error) {
 	type rawModel struct {
 		ID            string `json:"id"`
@@ -131,10 +135,6 @@ func parseModels(body []byte) ([]Model, error) {
 	for _, entry := range entries {
 		id := strings.TrimSpace(entry.ID)
 		if id == "" {
-			continue
-		}
-		// 只展示模型ID带 "free" 字符串的模型
-		if !strings.Contains(strings.ToLower(id), "free") {
 			continue
 		}
 		contextWindow := entry.ContextWindow
@@ -325,6 +325,28 @@ func (c *modelsDevCache) enrich(ctx context.Context, models []Model) {
 		return
 	}
 	applyModelsDevCatalog(models, catalog)
+}
+
+// freeOnly 只保留免费层模型（目录判定单价为 0）。
+//
+// 本供应商的定位是「接入免费额度」：上游 /v1/models 同时返回几十个付费
+// 模型和调试用的 test 模型，全部注册会把宿主的模型列表撑到上百条，且
+// 付费模型在本插件里必然 402。因此按目录单价筛：目录里没有的模型
+// （如上游的 test）一律不展示——没有价格数据就无法判定它属于免费层。
+//
+// 目录整体不可用时**不过滤**：宁可多展示，也不能因为一次目录抖动让
+// 所有免费模型消失。此时 isFreeTierModel 会退回按名字判定。
+func freeOnly(models []Model, catalog modelsDevCatalog) []Model {
+	if len(catalog) == 0 {
+		return models
+	}
+	out := make([]Model, 0, len(models))
+	for _, model := range models {
+		if free, known := catalogIsFree(catalog, model.ID); known && free {
+			out = append(out, model)
+		}
+	}
+	return out
 }
 
 // applyModelsDevCatalog 把目录条目合并进模型清单（纯函数，只填空字段）。

@@ -231,7 +231,7 @@ func TestForAuthFailureDoesNotWipeModelCache(t *testing.T) {
 
 	failing := false
 	host.setUpstream(func(method, url, body string) fakeUpstreamResponse {
-		if !strings.Contains(url, "/zen/v1/models") {
+		if !strings.Contains(url, "/inference/v1/models") {
 			return fakeUpstreamResponse{Status: http.StatusNotFound, Body: `{"code":404}`}
 		}
 		if failing {
@@ -338,7 +338,7 @@ func TestUnavailableCredentialStillServesConsole(t *testing.T) {
 	setupTestPlugin(t)
 	host.addAccount("1", "opencodezen-oc_test.json", `{"api_key":"sk-test-opencode","label":"zen-test"}`)
 	host.setUpstream(func(method, url, body string) fakeUpstreamResponse {
-		if strings.Contains(url, "/zen/v1/models") {
+		if strings.Contains(url, "/inference/v1/models") {
 			return fakeUpstreamResponse{Status: http.StatusOK, Body: `{"data":[{"id":"kept-model-free"}]}`}
 		}
 		return fakeUpstreamResponse{Status: http.StatusNotFound, Body: `{"code":404}`}
@@ -414,7 +414,7 @@ func TestCooldownWithFailingUpstreamKeepsConsole(t *testing.T) {
 		if !healthy {
 			return fakeUpstreamResponse{Status: http.StatusTooManyRequests, Body: `{"error":{"message":"rate limited"}}`}
 		}
-		if strings.Contains(url, "/zen/v1/models") {
+		if strings.Contains(url, "/inference/v1/models") {
 			return fakeUpstreamResponse{Status: http.StatusOK, Body: `{"data":[{"id":"kept-model-free"}]}`}
 		}
 		if strings.Contains(url, "pay/ide_user_ent_usage") {

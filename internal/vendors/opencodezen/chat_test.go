@@ -118,31 +118,44 @@ func TestApplyChatHeadersCarriesSessionMirrors(t *testing.T) {
 	}
 }
 
-func TestChatEndpointSplitsFreeAndPaidLanes(t *testing.T) {
-	pay := chatEndpoint("", false)
-	if want := DefaultBaseURL + ChatPath; pay != want {
-		t.Fatalf("付费出口 = %q，期望 %q", pay, want)
+func TestChatEndpointUsesInferenceLane(t *testing.T) {
+	// 免费与付费共用同一条 inference 车道（官方 v2 靠凭证区分，不靠路径）。
+	if got, want := chatEndpoint(""), "https://opencode.ai/inference/openai"+ChatPath; got != want {
+		t.Fatalf("出口 = %q，期望 %q", got, want)
 	}
-	free := chatEndpoint("", true)
-	if want := FreeTierBaseURL + ChatPath; free != want {
-		t.Fatalf("免费出口 = %q，期望 %q", free, want)
-	}
-	// 配置了自建/自托管网关时两层都走覆盖值，便于用户自救。
-	if got, want := chatEndpoint("https://gateway.example/zen/", true), "https://gateway.example/zen"+ChatPath; got != want {
-		t.Fatalf("覆盖后的免费出口 = %q，期望 %q", got, want)
+	// 配置了自建/自托管网关时走覆盖值，便于用户自救。
+	if got, want := chatEndpoint("https://gateway.example/zen/"), "https://gateway.example/zen"+ChatPath; got != want {
+		t.Fatalf("覆盖后的出口 = %q，期望 %q", got, want)
 	}
 }
 
-func TestNewChatRequestFreeTierUsesAnonymousCredentialAndOfficialTools(t *testing.T) {
+// TestModelsEndpointStripsOpenAILayer 锁定清单出口比 chat 少一层 /openai。
+//
+// /inference/openai/v1/models 实测 404，清单在 /inference/v1/models；
+// 覆盖值只写一层时也要能退回去，否则自建网关拿不到模型清单。
+func TestModelsEndpointStripsOpenAILayer(t *testing.T) {
+	if got, want := ModelsBaseURLFor(""), "https://opencode.ai/inference"; got != want {
+		t.Fatalf("清单出口 = %q，期望 %q", got, want)
+	}
+	if got, want := ModelsBaseURLFor("https://gw.example/inference/openai/"), "https://gw.example/inference"; got != want {
+		t.Fatalf("覆盖后的清单出口 = %q，期望 %q", got, want)
+	}
+}
+
+func TestNewChatRequestFreeTierUsesAnonymousCredential(t *testing.T) {
+	// mimo-v2.6-flash-free 在目录里是零价，按单价判定应进免费层。
+	catalog := modelsDevCatalog{
+		"mimo-v2.6-flash-free": {Cost: &modelsDevCost{}},
+	}
 	body := []byte(`{"model":"mimo-v2.6-flash-free","messages":[{"role":"user","content":"hi"}]}`)
-	req, errReq := newChatRequest(context.Background(), "", ChatRequest{APIKey: "oc_sk_secret", Body: body})
+	req, errReq := newChatRequest(context.Background(), "", ChatRequest{APIKey: "oc_sk_secret", Body: body}, catalog)
 	if errReq != nil {
 		t.Fatalf("newChatRequest: %v", errReq)
 	}
 	if got := req.Header.Get("Authorization"); got != "Bearer "+freeTierCredential {
 		t.Fatalf("免费层凭证 = %q，期望匿名凭证", got)
 	}
-	if got := req.URL.String(); got != FreeTierBaseURL+ChatPath {
+	if got := req.URL.String(); got != DefaultBaseURL+ChatPath {
 		t.Fatalf("免费层出口 = %q", got)
 	}
 
@@ -154,31 +167,48 @@ func TestNewChatRequestFreeTierUsesAnonymousCredentialAndOfficialTools(t *testin
 	if opt == nil || opt["include_usage"] != true {
 		t.Fatal("免费层未要求 stream_options.include_usage")
 	}
-
-	tools, _ := payload["tools"].([]any)
-	declared := make(map[string]map[string]any, len(tools))
-	for _, item := range tools {
-		toolMap, _ := item.(map[string]any)
-		fn, _ := toolMap["function"].(map[string]any)
-		name, _ := fn["name"].(string)
-		declared[name] = fn
+	// 官方客户端只透传会话自有工具，不按模型补一份；这里确认我们不注入。
+	if _, ok := payload["tools"]; ok {
+		t.Fatal("免费层不应注入工具定义")
 	}
-	for _, name := range []string{"glob", "grep", "read", "shell"} {
-		fn, ok := declared[name]
-		if !ok {
-			t.Fatalf("免费层缺少官方工具 %q", name)
-		}
-		params, _ := fn["parameters"].(map[string]any)
-		props, _ := params["properties"].(map[string]any)
-		if len(props) == 0 {
-			t.Fatalf("工具 %q 的 parameters 是空壳，上游会判成伪造客户端", name)
-		}
+}
+
+// TestFreeTierDetectionUsesPriceNotName 锁定免费判定口径。
+//
+// 官方用「单价为 0」判定免费（packages/core/src/plugin/provider/opencode.ts），
+// 目录里 big-pickle 零价但不带 "-free" 后缀，还是官方登出状态的默认模型。
+// 按名字判定会把它错推上付费车道。
+func TestFreeTierDetectionUsesPriceNotName(t *testing.T) {
+	catalog := modelsDevCatalog{
+		"big-pickle":           {Cost: &modelsDevCost{}},
+		"glm-5.3":              {Cost: &modelsDevCost{Input: 1.5, Output: 6}},
+		"payment-free-in-name": {Cost: &modelsDevCost{Input: 2, Output: 4}},
+	}
+
+	if !isFreeTierModel("big-pickle", catalog) {
+		t.Fatal("零价但无 free 后缀的模型应判定为免费")
+	}
+	if isFreeTierModel("glm-5.3", catalog) {
+		t.Fatal("有价格的模型不能判定为免费")
+	}
+	if isFreeTierModel("payment-free-in-name", catalog) {
+		t.Fatal("目录说它收费时，名字里的 free 不能覆盖价格")
+	}
+	// 目录缺失时退回名字判定，不能让免费请求误用用户 key。
+	if !isFreeTierModel("some-model-free", nil) {
+		t.Fatal("目录不可用时应退回按名字判定")
+	}
+	if isFreeTierModel("glm-5.3", nil) {
+		t.Fatal("目录不可用且名字无 free 时应按付费处理")
 	}
 }
 
 func TestNewChatRequestPaidKeepsUserCredential(t *testing.T) {
+	catalog := modelsDevCatalog{
+		"glm-5.3": {Cost: &modelsDevCost{Input: 1.5, Output: 6}},
+	}
 	body := []byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}]}`)
-	req, errReq := newChatRequest(context.Background(), "", ChatRequest{APIKey: "oc_sk_secret", Body: body})
+	req, errReq := newChatRequest(context.Background(), "", ChatRequest{APIKey: "oc_sk_secret", Body: body}, catalog)
 	if errReq != nil {
 		t.Fatalf("newChatRequest: %v", errReq)
 	}
@@ -193,27 +223,29 @@ func TestNewChatRequestPaidKeepsUserCredential(t *testing.T) {
 	}
 }
 
-func TestPrepareFreeTierBodyKeepsCallerTools(t *testing.T) {
-	body := []byte(`{"model":"beam-free","tools":[{"type":"function","function":{"name":"read","description":"caller","parameters":{"type":"object","properties":{"p":{"type":"string"}}}}}],"messages":[]}`)
-	payload := decodeJSON(t, prepareFreeTierBody(body))
-	tools, _ := payload["tools"].([]any)
-	seen := map[string]int{}
-	for _, item := range tools {
-		toolMap, _ := item.(map[string]any)
-		fn, _ := toolMap["function"].(map[string]any)
-		name, _ := fn["name"].(string)
-		seen[name]++
-		if name == "read" {
-			if desc, _ := fn["description"].(string); desc != "caller" {
-				t.Fatalf("调用方自带的 read 被覆盖：%q", desc)
-			}
-		}
+// TestMaxTokensNormalizedToCompletionTokens 锁定上限字段名。
+//
+// 官方 2.1.4 对 opencode 家族一律发 max_completion_tokens
+// （packages/ai/src/protocols/openai-chat.ts 的 detectMaxTokensField 落默认分支）。
+func TestMaxTokensNormalizedToCompletionTokens(t *testing.T) {
+	out := decodeJSON(t, normalizeMaxTokens([]byte(`{"model":"glm-5.3","max_tokens":256}`)))
+	if got := out["max_completion_tokens"]; got != float64(256) {
+		t.Fatalf("max_completion_tokens = %v，期望 256", got)
 	}
-	if seen["read"] != 1 {
-		t.Fatalf("read 出现了 %d 次", seen["read"])
+	if _, exists := out["max_tokens"]; exists {
+		t.Fatal("max_tokens 应被移除，避免同时出现两个上限字段")
 	}
-	if seen["shell"] != 1 {
-		t.Fatalf("缺少补齐的 shell 工具：%d", seen["shell"])
+
+	// 已经只给 max_completion_tokens 时保持原样。
+	same := decodeJSON(t, normalizeMaxTokens([]byte(`{"model":"glm-5.3","max_completion_tokens":64}`)))
+	if got := same["max_completion_tokens"]; got != float64(64) {
+		t.Fatalf("max_completion_tokens = %v，期望 64", got)
+	}
+
+	// 两个都给时以 max_completion_tokens 为准。
+	both := decodeJSON(t, normalizeMaxTokens([]byte(`{"max_tokens":10,"max_completion_tokens":99}`)))
+	if got := both["max_completion_tokens"]; got != float64(99) {
+		t.Fatalf("max_completion_tokens = %v，期望保留 99", got)
 	}
 }
 

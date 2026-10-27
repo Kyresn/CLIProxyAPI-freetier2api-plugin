@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -42,12 +41,15 @@ type ChatRequest struct {
 	Body []byte
 	// Stream 报告是否流式。
 	Stream bool
+	// Catalog 是 models.dev 目录，用于按单价判定免费层。
+	// 为空时退回按模型名判定。
+	Catalog modelsDevCatalog
 }
 
 // Chat 执行一次非流式对话，返回上游的完整响应体。
 func Chat(ctx context.Context, baseURL string, req ChatRequest) ([]byte, error) {
 	modelName := extractModelName(req.Body)
-	isFree := isFreeTierModel(modelName)
+	isFree := isFreeTierModel(modelName, req.Catalog)
 
 	if isFree {
 		// 免费层只接流式：强制 stream 打开，再把 SSE 聚合回完整 JSON 文档。
@@ -79,7 +81,7 @@ func Chat(ctx context.Context, baseURL string, req ChatRequest) ([]byte, error) 
 
 // ChatStream 执行一次流式对话，返回上游响应体（调用方负责关闭）。
 func ChatStream(ctx context.Context, baseURL string, req ChatRequest) (*http.Response, error) {
-	httpReq, errReq := newChatRequest(ctx, baseURL, req)
+	httpReq, errReq := newChatRequest(ctx, baseURL, req, req.Catalog)
 	if errReq != nil {
 		return nil, errReq
 	}
@@ -98,7 +100,7 @@ func ChatStream(ctx context.Context, baseURL string, req ChatRequest) (*http.Res
 
 // doChat 发起一次非流式对话请求。
 func doChat(ctx context.Context, baseURL string, req ChatRequest) (*http.Response, error) {
-	httpReq, errReq := newChatRequest(ctx, baseURL, req)
+	httpReq, errReq := newChatRequest(ctx, baseURL, req, req.Catalog)
 	if errReq != nil {
 		return nil, errReq
 	}
@@ -112,18 +114,19 @@ func doChat(ctx context.Context, baseURL string, req ChatRequest) (*http.Respons
 
 // newChatRequest 组装一次 chat-completions 请求（流式与非流式共用）。
 //
-// 两层出口不同：免费模型只服务官方 v2 客户端，走 models.dev 声明的
-// inference 车道并以匿名凭证请求；付费模型仍走 /zen 并带用户 key。
-func newChatRequest(ctx context.Context, baseURL string, req ChatRequest) (*http.Request, error) {
-	isFree := isFreeTierModel(extractModelName(req.Body))
+// 免费与付费走同一条 inference 车道，区别只在凭证：免费用匿名 public，
+// 付费用用户 key。是否免费由 models.dev 目录的单价判定，见 isFreeTierModel。
+func newChatRequest(ctx context.Context, baseURL string, req ChatRequest, catalog modelsDevCatalog) (*http.Request, error) {
 	body := req.Body
 	credential := req.APIKey
-	if isFree {
+	if isFreeTierModel(extractModelName(body), catalog) {
 		body = prepareFreeTierBody(body)
 		credential = freeTierCredential
+	} else {
+		body = normalizeMaxTokens(body)
 	}
 
-	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, chatEndpoint(baseURL, isFree), bytesReader(body))
+	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, chatEndpoint(baseURL), bytesReader(body))
 	if errReq != nil {
 		return nil, fmt.Errorf("build chat request: %w", errReq)
 	}
@@ -131,15 +134,41 @@ func newChatRequest(ctx context.Context, baseURL string, req ChatRequest) (*http
 	return httpReq, nil
 }
 
-// chatEndpoint 返回本次请求的完整地址。
-func chatEndpoint(override string, isFree bool) string {
-	if strings.TrimSpace(override) != "" {
-		return BaseURL(override) + ChatPath
+// normalizeMaxTokens 把 max_tokens 归一到 max_completion_tokens。
+//
+// 官方 2.1.4 对 opencode 家族的模型一律发 max_completion_tokens：目录里
+// 只声明了 compatibility.reasoning_field、没有 max_tokens_field，因此
+// detectMaxTokensField（packages/ai/src/protocols/openai-chat.ts）落到默认
+// 分支。宿主透传的是客户端原始字段名，这里补齐以免上游按未知字段忽略上限。
+//
+// 两个字段都给时以 max_completion_tokens 为准并丢掉 max_tokens，避免同一
+// 请求里出现两个上限字段。解析失败原样返回，交给上游报错。
+func normalizeMaxTokens(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
 	}
-	if isFree {
-		return FreeTierBaseURL + ChatPath
+	value, hasMax := payload["max_tokens"]
+	if !hasMax {
+		return body
 	}
-	return DefaultBaseURL + ChatPath
+	if _, hasCompletion := payload["max_completion_tokens"]; !hasCompletion {
+		payload["max_completion_tokens"] = value
+	}
+	delete(payload, "max_tokens")
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return encoded
+}
+
+// chatEndpoint 返回 chat-completions 的完整地址。
+//
+// 免费与付费共用同一出口（官方 v2 就是这么分流凭证的），因此不再按
+// 是否免费分层。
+func chatEndpoint(override string) string {
+	return BaseURL(override) + ChatPath
 }
 
 // extractModelName 从请求体中提取 model 字符串。
@@ -151,46 +180,45 @@ func extractModelName(body []byte) string {
 	return payload.Model
 }
 
-// isFreeTierModel 判断是否为 free 免费层模型。
-func isFreeTierModel(model string) bool {
+// isFreeTierModel 判断是否为免费层模型。
+//
+// 判定口径对齐官方 2.1.4：看模型单价是否为 0，**不看模型名**。
+// 官方在同名维度上用的是 `!model.cost.some(c => c.input > 0)`
+// （packages/core/src/plugin/provider/opencode.ts），而目录里存在零价
+// 但名字不带 "free" 的模型（如 big-pickle，且它是官方登出状态的默认
+// 模型）。按名字判定会把这类模型错误地推上付费车道。
+//
+// 单价来自 models.dev 目录；目录不可用时只能退回名字判定（见
+// catalogIsFree）。这里额外接受显式的 "-free" 后缀作为兜底信号。
+func isFreeTierModel(model string, catalog modelsDevCatalog) bool {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	if free, known := catalogIsFree(catalog, model); known {
+		return free
+	}
 	return strings.Contains(strings.ToLower(model), "free")
 }
 
-//go:embed assets/free-tier-tools.json
-var freeTierToolsRaw []byte
-
-// freeTierTool 是官方客户端声明的一个工具定义。
-type freeTierTool struct {
-	name string
-	body map[string]any
-}
-
-// freeTierTools 是官方 OpenCode 2.1.4 客户端在免费层请求里声明的工具集，
-// 原样取自其出站请求（见 assets/free-tier-tools.json）。
+// catalogIsFree 用目录里该模型的单价回答「是否免费」。
 //
-// 免费层校验的是工具声明的真实性：名字对但 parameters 是空壳的
-// glob/grep/read/shell 会被判成伪造客户端，所以这里不留占位定义。
-var freeTierTools = parseFreeTierTools()
-
-func parseFreeTierTools() []freeTierTool {
-	var raw []map[string]any
-	if err := json.Unmarshal(freeTierToolsRaw, &raw); err != nil {
-		// 内嵌资源损坏属于构建缺陷；静默降级会让所有免费请求变成 403。
-		panic("opencodezen: parse assets/free-tier-tools.json: " + err.Error())
+// known=false 表示目录没有这个模型（或没有 cost 块），调用方需自行兜底：
+// 缺数据不能当成"免费"，也不能当成"付费"。
+func catalogIsFree(catalog modelsDevCatalog, model string) (free bool, known bool) {
+	entry, okEntry := catalog[model]
+	if !okEntry || entry.Cost == nil {
+		return false, false
 	}
-	tools := make([]freeTierTool, 0, len(raw))
-	for _, item := range raw {
-		function, _ := item["function"].(map[string]any)
-		name, _ := function["name"].(string)
-		if name == "" {
-			continue
-		}
-		tools = append(tools, freeTierTool{name: name, body: item})
-	}
-	return tools
+	return entry.Cost.Input == 0 && entry.Cost.Output == 0, true
 }
 
-// prepareFreeTierBody 规范化免费层请求体：强制流式并补齐官方工具声明。
+// prepareFreeTierBody 规范化免费层请求体：强制流式并声明用量统计。
+//
+// **不注入任何工具定义**。官方客户端只透传当前会话真正启用的工具
+// （packages/core/src/session/model-request.ts），全仓库没有"按模型补
+// 工具"的分支；凭空塞一份工具集既与官方行为不符，也让每个请求多背
+// 十几 KB 载荷。调用方自带什么就发什么。
 func prepareFreeTierBody(body []byte) []byte {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -203,31 +231,6 @@ func prepareFreeTierBody(body []byte) []byte {
 	} else {
 		payload["stream_options"] = map[string]any{"include_usage": true}
 	}
-
-	existing := make(map[string]bool)
-	current, _ := payload["tools"].([]any)
-	for _, item := range current {
-		toolMap, okTool := item.(map[string]any)
-		if !okTool {
-			continue
-		}
-		function, okFn := toolMap["function"].(map[string]any)
-		if !okFn {
-			continue
-		}
-		if name, okName := function["name"].(string); okName {
-			existing[name] = true
-		}
-	}
-
-	for _, tool := range freeTierTools {
-		if existing[tool.name] {
-			continue
-		}
-		current = append(current, tool.body)
-		existing[tool.name] = true
-	}
-	payload["tools"] = current
 
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -565,24 +568,25 @@ func bytesReader(data []byte) io.Reader {
 
 // 本文件定义 OpenCode ZEN 的上游端点与请求头。
 //
-// 端点来自上游网关项目的实测值（opencode2api 的 internal/config/config.go
-// 与 internal/gateway/upstream.go）：base 是 https://opencode.ai/zen，
-// 协议路径按模型的原生协议选择。
+// 端点取自官方 2.1.4 客户端的模型目录（models.dev provider "opencode" 的
+// api 字段）：付费与免费模型都走 inference 车道，区别只在凭证——免费用
+// 匿名 public，付费用用户 key。历史上的 https://opencode.ai/zen 只是网页
+// 路径与用量查询端点，已不再是推理基址。
 //
 // **本插件只处理 chat-completions**（Claude / Codex 客户端由宿主翻译），
-// 因此这里只保留 chat 路径。ZEN 上游还提供 /v1/responses、/v1/messages、
+// 因此这里只保留 chat 路径。上游还提供 /v1/responses、/v1/messages、
 // /v1/systemone，那些由宿主侧的多协议翻译覆盖，插件不重复实现。
 
 const (
-	// DefaultBaseURL 是 ZEN 的上游基地址。
-	DefaultBaseURL = "https://opencode.ai/zen"
+	// DefaultBaseURL 是 chat-completions 的上游基地址。
+	DefaultBaseURL = "https://opencode.ai/inference/openai"
 	// ChatPath 是 chat-completions 的路径。
 	ChatPath = "/v1/chat/completions"
+	// ModelsBaseURL 是模型清单的基地址，比 chat 少一层 /openai：
+	// /inference/openai/v1/models 实测 404，清单在 /inference/v1/models。
+	ModelsBaseURL = "https://opencode.ai/inference"
 	// ModelsPath 是模型清单的路径。
 	ModelsPath = "/v1/models"
-	// FreeTierBaseURL 是免费模型在 v2 的出口。models.dev 给 opencode 家族的
-	// provider.api 就是这条 inference 车道；/zen 已不对免费层开放。
-	FreeTierBaseURL = "https://opencode.ai/inference/openai"
 	// freeTierCredential 是官方客户端为免费层使用的匿名凭证：
 	// 付费 key 在这条车道上会被拒（实测 401 Missing API key）。
 	freeTierCredential = "public"
@@ -603,7 +607,7 @@ const (
 	userAgentFormat = "opencode/%s/%s/%s"
 )
 
-// BaseURL 返回上游基地址（末尾无斜杠）。
+// BaseURL 返回 chat-completions 的上游基地址（末尾无斜杠）。
 //
 // 允许配置覆盖：上游换域名或用户要走自建网关时不必改代码。
 func BaseURL(override string) string {
@@ -612,6 +616,19 @@ func BaseURL(override string) string {
 		return DefaultBaseURL
 	}
 	return trimmed
+}
+
+// ModelsBaseURLFor 返回模型清单的上游基地址（末尾无斜杠）。
+//
+// 与 chat 出口不同层：chat 在 /inference/openai，清单在 /inference。
+// 覆盖值只写了 chat 那层的（含 /openai 后缀）时，清单层退掉这一层，
+// 让自建网关仍然只有一个配置项。
+func ModelsBaseURLFor(override string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(override), "/")
+	if trimmed == "" {
+		return ModelsBaseURL
+	}
+	return strings.TrimSuffix(trimmed, "/openai")
 }
 
 // UserAgent 返回伪装成官方 OpenCode 客户端的 UA。
