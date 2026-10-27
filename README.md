@@ -42,6 +42,8 @@
 | `minimaxcodecn` | MiniMax Code 国内版 | `cn` | OAuth 设备授权 | `minimaxcodecn-*.json` |
 | `minimaxcodeglobal` | MiniMax Code 国际版 | `global` | OAuth 设备授权 | `minimaxcodeglobal-*.json` |
 
+> **`opencodezen` 免费模型**：上游只对 OpenCode 2 客户端开放，且按出口 IP 每日限额——超限返回 HTTP 429 `FreeUsageLimitError`，`Retry-After` 指向次日 UTC 0 点。插件按官方 2.1.4 的形态请求（匿名 `public` 凭证、v2 会话头、官方工具声明），额度耗尽时原样透传上游 429 提示；需要稳定可用请改用付费模型或 OpenCode Go。
+
 ## 快速开始
 
 ### 方式一：通过 CPA 插件商店安装（推荐）
