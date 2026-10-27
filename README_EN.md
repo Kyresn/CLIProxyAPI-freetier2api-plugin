@@ -42,8 +42,6 @@ If this project helps you, a Star would mean a lot.
 | `minimaxcodecn` | MiniMax Code CN | `cn` | OAuth Device Flow | `minimaxcodecn-*.json` |
 | `minimaxcodeglobal` | MiniMax Code Global | `global` | OAuth Device Flow | `minimaxcodeglobal-*.json` |
 
-> **`opencodezen` free models**: upstream serves them only to the OpenCode 2 client, with a per-egress-IP daily quota; when it is used up the endpoint answers HTTP 429 `FreeUsageLimitError` and `Retry-After` points at the next UTC midnight. The plugin sends the official 2.1.4 shape (anonymous `public` credential, v2 session headers, no injected tool declarations) and passes that 429 through unchanged; use paid models or OpenCode Go for stable access.
-
 ## Quick Start
 
 ### Option 1: Install via CPA Plugin Store (Recommended)
