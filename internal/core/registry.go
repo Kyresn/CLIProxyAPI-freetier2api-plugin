@@ -155,11 +155,28 @@ func (r *Registry) ModelKeyFor(vendorID, modelID string) string {
 }
 
 // FileNameFor 生成 <vendor>-<标识>.json。
-func FileNameFor(vendorID, identifier string) string {
+//
+// 标识为空时按 seeds（通常是 access token）的稳定指纹兜底，**不能**退到固定
+// 占位名：上游不给 uid 的供应商（AutoClaw 国内版的 token 不是 JWT）一旦落到
+// 同一个固定文件名，第二个账号会静默覆盖第一个。
+//
+// 指纹对同一份凭证稳定（重登覆盖同一文件），对不同凭证各不相同；两者都拿不到
+// 时只能退到随机串——那只保证互不覆盖，保证不了重登幂等，调用方有身份字段
+// （uid / userId / 邮箱 / 手机号）时必须传进来。
+func FileNameFor(vendorID, identifier string, seeds ...string) string {
 	vendorID = strings.ToLower(strings.TrimSpace(vendorID))
 	identifier = SanitizeFileComponent(identifier)
 	if identifier == "" {
-		identifier = "account"
+		for _, seed := range seeds {
+			if fingerprint := TokenFingerprint(seed); fingerprint != "" {
+				// "t" 前缀：指纹本身也是十六进制串，不加前缀会与真实 uid 撞名。
+				identifier = "t" + fingerprint
+				break
+			}
+		}
+	}
+	if identifier == "" {
+		identifier = RandomHex(8)
 	}
 	return vendorID + "-" + identifier + ".json"
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"freetier2api-plugin/cpasdk/pluginapi"
@@ -102,6 +103,52 @@ func TestFileNameForAndSanitize(t *testing.T) {
 	}
 	if got := SanitizeFileComponent("../etc/passwd"); got == "" || got == "../etc/passwd" {
 		t.Fatalf("SanitizeFileComponent must strip unsafe characters, got %q", got)
+	}
+}
+
+// TestFileNameForFallsBackToStableFingerprint 锁定「取不到 UID 时的文件名兜底」：
+// 必须是凭证指纹而不是固定 "account"，否则第二个账号会静默覆盖第一个（#55）。
+func TestFileNameForFallsBackToStableFingerprint(t *testing.T) {
+	first := FileNameFor("autoclawcn", "", "token-a")
+	again := FileNameFor("autoclawcn", "", "token-a")
+	other := FileNameFor("autoclawcn", "", "token-b")
+	if first != again {
+		t.Fatalf("同一凭证两次生成的文件名不同：%q / %q（重登会多出重复账号）", first, again)
+	}
+	if first == other {
+		t.Fatalf("不同凭证拿到同一个文件名：%q（后登的账号会覆盖前一个）", first)
+	}
+	if strings.Contains(first, "account") {
+		t.Fatalf("FileNameFor 退回了固定占位名：%q", first)
+	}
+	if !strings.HasPrefix(first, "autoclawcn-t") {
+		t.Fatalf("指纹文件名缺少 t 前缀（会与真实 uid 撞名）：%q", first)
+	}
+	// 有标识时种子不参与，行为与加兜底之前一致。
+	if got := FileNameFor("autoclawcn", "u1", "token-a"); got != "autoclawcn-u1.json" {
+		t.Fatalf("有 UID 时 FileNameFor = %q, want autoclawcn-u1.json", got)
+	}
+	// 既没有标识也没有种子时只能保证唯一：每个账号落到各自的文件，不共用占位名。
+	noneA, noneB := FileNameFor("autoclawcn", ""), FileNameFor("autoclawcn", "")
+	if noneA == noneB || strings.Contains(noneA, "account") {
+		t.Fatalf("无标识无种子时应退到随机串：%q / %q", noneA, noneB)
+	}
+}
+
+// TestTokenFingerprint 锁定指纹长度与稳定性（文件名后缀依赖它）。
+func TestTokenFingerprint(t *testing.T) {
+	if got := TokenFingerprint("   "); got != "" {
+		t.Fatalf("空 token 的指纹 = %q, want empty", got)
+	}
+	first := TokenFingerprint("token-a")
+	if len(first) != 12 {
+		t.Fatalf("指纹长度 = %d, want 12（%q）", len(first), first)
+	}
+	if first != TokenFingerprint(" token-a ") {
+		t.Fatalf("指纹应忽略首尾空白：%q", first)
+	}
+	if first == TokenFingerprint("token-b") {
+		t.Fatal("不同 token 的指纹相同")
 	}
 }
 
