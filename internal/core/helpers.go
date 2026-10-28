@@ -298,6 +298,20 @@ func JWTUserID(token string) string {
 	return GetString(claims, "user_id", "userId", "uid", "userID")
 }
 
+// TokenFingerprint 返回 token 的稳定短指纹（SHA-256 前 12 位十六进制）。
+//
+// 用于「上游不给 uid」时给账号一个稳定且互不相同的文件名后缀（见 FileNameFor）：
+// 同一份凭证每次算出同一个值，不同凭证实际上不可能相同，且不可逆、不落盘。
+// 空值返回空串。
+func TokenFingerprint(token string) string {
+	trimmed := strings.TrimSpace(token)
+	if trimmed == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(trimmed))
+	return hex.EncodeToString(sum[:6])
+}
+
 // NewPKCEPair 生成 PKCE 的 verifier 与 S256 challenge。
 func NewPKCEPair() (verifier, challenge string, err error) {
 	buffer := make([]byte, 32)

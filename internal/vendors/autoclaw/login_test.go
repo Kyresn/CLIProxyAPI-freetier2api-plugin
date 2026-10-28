@@ -358,6 +358,123 @@ func TestSubmitCallbackExchangesCodeWithSessionNavigateURI(t *testing.T) {
 	}
 }
 
+// TestLoginCredentialUIDChainCoversCamelCaseUserID 锁定 UID 提取链：国内版登录
+// 响应只回驼峰 userId、token 又不是 JWT 时，UID 仍要落在凭证上——否则凭证文件名
+// 只能靠兜底，第二个账号就会覆盖第一个（#55）。
+func TestLoginCredentialUIDChainCoversCamelCaseUserID(t *testing.T) {
+	cases := []struct {
+		name       string
+		data       loginResultData
+		wantUID    string
+		wantStored string
+	}{
+		{
+			name:       "驼峰 userId 且 token 非 JWT",
+			data:       loginResultData{AccessToken: "opaque-token", UserIDCamel: "8a22f603"},
+			wantUID:    "8a22f603",
+			wantStored: "8a22f603",
+		},
+		{
+			name:       "蛇形 user_id 数字",
+			data:       loginResultData{AccessToken: "opaque-token", UserID: float64(42)},
+			wantUID:    "42",
+			wantStored: "42",
+		},
+		{
+			name:       "驼峰 userId 在蛇形 user_id 为空时补位",
+			data:       loginResultData{AccessToken: "opaque-token", UserID: "", UserIDCamel: "u-camel"},
+			wantUID:    "u-camel",
+			wantStored: "u-camel",
+		},
+		{
+			name:       "user_id 为 0 时不当作 UID",
+			data:       loginResultData{AccessToken: "opaque-token", UserID: float64(0), UserIDCamel: "u-camel"},
+			wantUID:    "u-camel",
+			wantStored: "u-camel",
+		},
+		{
+			name:       "两种写法同时出现时以蛇形为准",
+			data:       loginResultData{AccessToken: "opaque-token", UserID: "u-snake", UserIDCamel: "u-camel"},
+			wantUID:    "u-snake",
+			wantStored: "u-snake",
+		},
+	}
+	for _, testCase := range cases {
+		cred, errCred := newLoginCredential(testCase.data, RegionCN, "device-1")
+		if errCred != nil {
+			t.Fatalf("%s: newLoginCredential: %v", testCase.name, errCred)
+		}
+		if got := cred.UIDValue(); got != testCase.wantUID {
+			t.Fatalf("%s: UID = %q, want %q", testCase.name, got, testCase.wantUID)
+		}
+		// 落盘 JSON 的 userId 与 UID 同源：宿主重读凭证时身份不会丢。
+		storage, errStorage := cred.StorageJSON()
+		if errStorage != nil {
+			t.Fatalf("%s: StorageJSON: %v", testCase.name, errStorage)
+		}
+		var payload map[string]any
+		if errUnmarshal := json.Unmarshal(storage, &payload); errUnmarshal != nil {
+			t.Fatalf("%s: decode storage: %v", testCase.name, errUnmarshal)
+		}
+		if payload["userId"] != testCase.wantStored {
+			t.Fatalf("%s: storage userId = %#v, want %q", testCase.name, payload["userId"], testCase.wantStored)
+		}
+	}
+}
+
+// TestLoginFileNamesAreStableAndUniqueWithoutJWTToken 锁定登录落盘文件名：
+// 同一账号重登同名（幂等）、不同账号不同名（不互相覆盖），且都不再是固定占位名。
+func TestLoginFileNamesAreStableAndUniqueWithoutJWTToken(t *testing.T) {
+	useLoopbackHost(t)
+	userIDs := map[string]string{"first": "8a22f603", "second": "9b33a704"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Code string `json:"code"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		// 刻意只回驼峰 userId、token 也不是 JWT：这正是国内版实测的响应形态。
+		_, _ = w.Write([]byte(`{"code":0,"msg":"SUCCESS","data":{"access_token":"opaque-` + body.Code +
+			`","refresh_token":"refresh-` + body.Code + `","userId":"` + userIDs[body.Code] +
+			`","user_name":"同名用户"}}`))
+	}))
+	defer server.Close()
+
+	instances := Instances(envWithLogins())
+	oauth := instances[1].(*oauthLoginAdapter)
+	oauth.baseURL = server.URL
+	submit := func(sessionSuffix, code string) string {
+		t.Helper()
+		sessionID := oauth.ID() + "_oauth_" + sessionSuffix
+		oauth.Env.Logins.Register(oauth.ID(), sessionID, time.Hour, 0, &autoclawPendingLogin{
+			Region: RegionGlobal, Vendor: oauthVendorGoogle, DeviceID: "device-1",
+			NavigateURI: "http://localhost:46952/auth/callback-google",
+		})
+		result, errSubmit := oauth.SubmitCallback(testContext(), sessionID,
+			"http://localhost:46952/auth/callback-google?code="+code)
+		if errSubmit != nil {
+			t.Fatalf("SubmitCallback(%s): %v", code, errSubmit)
+		}
+		return result.Auth.FileName
+	}
+
+	firstLogin := submit("s1", "first")
+	secondAccount := submit("s2", "second")
+	sameAccountAgain := submit("s3", "first")
+
+	if firstLogin != sameAccountAgain {
+		t.Fatalf("同一账号重登换了文件名：%q / %q（会多出重复账号）", firstLogin, sameAccountAgain)
+	}
+	if firstLogin == secondAccount {
+		t.Fatalf("不同账号落到同一文件名：%q（后登的覆盖前一个）", firstLogin)
+	}
+	if firstLogin != "autoclawglobal-8a22f603.json" {
+		t.Fatalf("文件名 = %q, want autoclawglobal-8a22f603.json", firstLogin)
+	}
+	if secondAccount != "autoclawglobal-9b33a704.json" {
+		t.Fatalf("文件名 = %q, want autoclawglobal-9b33a704.json", secondAccount)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 登录测试辅助：loopback 宿主与会话表
 // ---------------------------------------------------------------------------

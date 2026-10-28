@@ -623,8 +623,15 @@ func (a *App) VerifyLoginSMS(ctx context.Context, vendorID, sessionKey, phone, c
 	if errVerify != nil {
 		return "", "", "", core.ToPluginError(errVerify)
 	}
-	// 文件名按 vendor 前缀 + label 兜底（与 auth.login.poll 的 FileNameFor 同口径）。
-	fileName := core.FileNameFor(vendor.ID(), core.FirstNonEmpty(label, "account"))
+	// 文件名按账号身份生成：UID → 展示名 → 凭证指纹（core.FileNameFor 的兜底）。
+	// 展示名会重复、也会为空，单拿它当文件名正是「第二个账号覆盖第一个」的成因
+	// （#55）；指纹还需要 access token 作种子，这里一并交给 FileNameFor。
+	identifier, token := label, ""
+	if credential, errParse := vendor.Parse(storageJSON, ""); errParse == nil {
+		identifier = core.FirstNonEmpty(credential.UIDValue(), label)
+		token = credential.TokenValue()
+	}
+	fileName := core.FileNameFor(vendor.ID(), identifier, token)
 	return fileName, label, string(storageJSON), nil
 }
 

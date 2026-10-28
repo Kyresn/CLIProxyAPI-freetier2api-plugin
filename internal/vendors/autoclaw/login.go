@@ -202,7 +202,7 @@ func (oauth *oauthLoginAdapter) SubmitCallback(ctx context.Context, state, rawUR
 		Message: "AutoClaw 登录成功",
 		Auth: pluginapi.AuthData{
 			Provider:    core.ProviderKey,
-			FileName:    core.FileNameFor(oauth.ID(), cred.UIDValue()),
+			FileName:    core.FileNameFor(oauth.ID(), cred.UIDValue(), cred.AccessTokenValue()),
 			Label:       label,
 			StorageJSON: storageJSON,
 		},
@@ -450,16 +450,11 @@ func VerifyLoginCode(ctx context.Context, baseURL, sessionKey, phone, code strin
 	if envCode != 0 {
 		return nil, core.NewPluginError("login_failed", describeLoginError(loginFlowSMS, envCode, msg), http.StatusBadRequest)
 	}
-	var data struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		UserID       any    `json:"user_id"`
-		UserName     string `json:"user_name"`
-	}
+	var data loginResultData
 	if errUnmarshal := json.Unmarshal(payload, &data); errUnmarshal != nil {
 		return nil, &core.Failure{Msg: "parse login response: " + errUnmarshal.Error(), Kind: core.FailureKindServer}
 	}
-	cred, errCred := newLoginCredential(data.AccessToken, data.RefreshToken, data.UserName, data.UserID, RegionCN, deviceID)
+	cred, errCred := newLoginCredential(data, RegionCN, deviceID)
 	if errCred != nil {
 		return nil, errCred
 	}
@@ -467,19 +462,33 @@ func VerifyLoginCode(ctx context.Context, baseURL, sessionKey, phone, code strin
 	return cred, nil
 }
 
+// loginResultData 是短信 / OAuth 两条链路共有的登录响应字段。
+//
+// 收成具名类型是因为两条链路原先各抄了一份匿名结构，加字段必然漏一处；
+// user_id 同时收蛇形与驼峰：国内版实测回的是 userId，只读 user_id 会让 UID
+// 恒为空，账号文件名随之撞车（#55）。
+type loginResultData struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	UserID       any    `json:"user_id"`
+	UserIDCamel  any    `json:"userId"`
+	UserName     string `json:"user_name"`
+}
+
 // newLoginCredential 把两条登录链路共有的响应字段归一成凭证。
 //
-// 上游登录响应没有 expires_in 时按 28 天保守记录；UID 先取响应里的
-// user_id，缺失再从 access token 的 JWT payload 里读。
-func newLoginCredential(access, refresh, userName string, userID any, region Region, deviceID string) (*Credential, error) {
-	access = strings.TrimSpace(access)
+// 上游登录响应没有 expires_in 时按 28 天保守记录；UID 取响应里的
+// user_id / userId，缺失再从 access token 的 JWT payload 里读——国内版 token
+// 不是 JWT，响应字段才是主路径。
+func newLoginCredential(data loginResultData, region Region, deviceID string) (*Credential, error) {
+	access := strings.TrimSpace(data.AccessToken)
 	if access == "" {
 		return nil, core.NewPluginError("login_failed", "登录成功但上游没有返回 access_token", http.StatusBadGateway)
 	}
 	cred := &Credential{
 		AccessToken:  access,
-		RefreshToken: strings.TrimSpace(refresh),
-		UserName:     strings.TrimSpace(userName),
+		RefreshToken: strings.TrimSpace(data.RefreshToken),
+		UserName:     strings.TrimSpace(data.UserName),
 		DeviceID:     deviceID,
 		Region:       region,
 		ExpiresAt:    core.JWTExpiry(access),
@@ -487,17 +496,25 @@ func newLoginCredential(access, refresh, userName string, userID any, region Reg
 	if cred.ExpiresAt == 0 {
 		cred.ExpiresAt = time.Now().Add(28 * 24 * time.Hour).Unix()
 	}
-	cred.UID = core.FirstNonEmpty(uidFromAny(userID), core.JWTUserID(access))
+	cred.UID = core.FirstNonEmpty(uidFromAny(data.UserID, data.UserIDCamel), core.JWTUserID(access))
 	return cred, nil
 }
 
-// uidFromAny 把上游的 user_id（数字或字符串）归一成字符串。
-func uidFromAny(value any) string {
-	switch typed := value.(type) {
-	case string:
-		return strings.TrimSpace(typed)
-	case float64:
-		return strconv.FormatInt(int64(typed), 10)
+// uidFromAny 把上游的 user_id / userId（数字或字符串）归一成第一个非空字符串。
+func uidFromAny(values ...any) string {
+	for _, value := range values {
+		switch typed := value.(type) {
+		case string:
+			if trimmed := strings.TrimSpace(typed); trimmed != "" {
+				return trimmed
+			}
+		case float64:
+			// 0 是「字段存在但没填」的形态，不能当成 UID——否则所有这种账号
+			// 会一起落到 <vendor>-0.json 上。
+			if typed > 0 {
+				return strconv.FormatInt(int64(typed), 10)
+			}
+		}
 	}
 	return ""
 }
@@ -673,16 +690,11 @@ func OAuthExchangeCode(ctx context.Context, baseURL string, vendor oauthVendor, 
 	if status != 0 {
 		return nil, core.NewPluginError("login_failed", describeLoginError(loginFlowOAuth, status, msg), http.StatusBadRequest)
 	}
-	var data struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		UserID       any    `json:"user_id"`
-		UserName     string `json:"user_name"`
-	}
+	var data loginResultData
 	if errUnmarshal := json.Unmarshal(payload, &data); errUnmarshal != nil {
 		return nil, &core.Failure{Msg: "parse oauth login response: " + errUnmarshal.Error(), Kind: core.FailureKindServer}
 	}
-	return newLoginCredential(data.AccessToken, data.RefreshToken, data.UserName, data.UserID, RegionGlobal, deviceID)
+	return newLoginCredential(data, RegionGlobal, deviceID)
 }
 
 // 回调端口：Zai 只能用官方客户端登记过的那四个端口（见文件头），
