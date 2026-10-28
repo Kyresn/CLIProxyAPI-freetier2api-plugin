@@ -104,11 +104,20 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 		writeResponse(response, core.ErrorEnvelope("invalid_method", "method is required"))
 		return 1
 	}
-	var requestBytes []byte
-	if request != nil && requestLen > 0 {
-		requestBytes = C.GoBytes(unsafe.Pointer(request), C.int(requestLen))
+	methodName := C.GoString(method)
+	var raw []byte
+	var errHandle error
+	if methodName == pluginabi.MethodResponseNormalizeBefore {
+		// The normalizer is synchronous and read-only; its input remains valid
+		// until this call returns. Avoid copying the complete request per chunk.
+		raw, errHandle = handleBorrowedResponseNormalize(unsafe.Pointer(request), uintptr(requestLen))
+	} else {
+		var requestBytes []byte
+		if request != nil && requestLen > 0 {
+			requestBytes = C.GoBytes(unsafe.Pointer(request), C.int(requestLen))
+		}
+		raw, errHandle = handleMethod(methodName, requestBytes)
 	}
-	raw, errHandle := handleMethod(C.GoString(method), requestBytes)
 	if errHandle != nil {
 		writeResponse(response, core.ErrorEnvelopeFromError(errHandle))
 		return 1
