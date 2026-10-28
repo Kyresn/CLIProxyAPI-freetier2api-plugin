@@ -17,7 +17,7 @@ If this project helps you, a Star would mean a lot.
 - Native integration with CLIProxyAPI's Anthropic `/v1/messages`, OpenAI `/v1/chat/completions`, and OpenAI `/v1/responses` endpoints without running a separate gateway service
 - Supports 15 free-tier provider instances across 8 vendor families (AutoClaw CN/Global and Raccoon included) with strict per-vendor credential isolation (capped at 10 accounts per provider)
 - Dynamic model catalog discovery, custom model aliases, and cross-provider load balancing / failover
-- Built-in single-page Web console for OAuth device login, localhost callback paste, API Key import, account aliases, quota tracking, check-in history, model toggling, and live logs
+- Built-in single-page Web console for OAuth device login, localhost callback paste, API Key import, account aliases and batch enable/disable/delete, quota tracking, check-in history, model toggling, and live logs
 - Automated daily check-in, automated daily tasks, and token keepalive refresh
 - Pure Go standard library implementation with zero third-party runtime dependencies
 
@@ -114,9 +114,18 @@ In the Models table of the console, click any model ID or its `✎` icon to assi
 
 ### 4. Account Aliases
 
-The Accounts table shows whatever nickname or email the upstream returns, and some platforms only hand out a default nickname that cannot be changed — with several accounts it becomes impossible to tell them apart. Click the account name or its `✎` icon to set a custom alias; the display order becomes **alias → upstream nickname/email → file name → account ID**. Saving an empty value clears the alias and restores the upstream name, so behavior is unchanged when no alias is set.
+The Accounts table shows whatever nickname or email the upstream returns, and some platforms only hand out a default nickname that cannot be changed — with several accounts it becomes impossible to tell them apart. Click the account name or its `✎` icon to set a custom alias; the editor is prefilled with the current name, and the display order becomes **alias → upstream nickname/email → file name → account ID**. Saving an empty value, or typing the original name back, means "no alias" — the record is cleared and the upstream name is used, so behavior is unchanged when no alias is set.
 
 Aliases are stored in `state.json` under `account_aliases`, keyed by account identity (the credential file name, i.e. `core.Credential.FileID`) rather than by nickname or token, so they survive token refresh and re-login into the same credential file.
+
+### 5. Account Batch Actions
+
+The Accounts table has a selection column like the Models table. The toolbar reads **Add account / Disable selected / Enable selected / Select all / Clear / Token refresh / Query quota / Check in / Run tasks / Delete**:
+
+- Nothing is selected by default. Delete is disabled while the selection is empty, and Token refresh, Query quota, Check in and Run tasks act on **all accounts**;
+- With a selection, those actions only touch the selected accounts. The selection survives table refreshes, and accounts that disappear drop out of it automatically;
+- Disabling is not deleting: it only writes the host's `disabled` flag into the credential JSON (token and file are kept, so it is reversible). Delete removes the credential file;
+- Delete still takes two clicks: the first arms the button (auto-reset after 5 seconds), the second deletes.
 
 ## Configuration
 

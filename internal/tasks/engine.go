@@ -163,9 +163,12 @@ func (s *Service) effectiveSettings() map[string]any {
 }
 
 // forEachAccount 遍历本插件名下可用的账号。
-func (s *Service) forEachAccount(ctx context.Context, callbackID string, fn func(context.Context, *accountContext) error) {
+//
+// targets 为空表示全部账号；非空时只遍历命中的那些（管理端的批量勾选）。
+func (s *Service) forEachAccount(ctx context.Context, callbackID string, targets []string, fn func(context.Context, *accountContext) error) {
 	cfg := s.deps.Config()
 	accounts, failures := s.deps.Pool().Load(ctx, callbackID, auth.Options{
+		Targets:       targets,
 		EnabledRealms: cfg.EnabledRealms,
 	})
 	for _, failure := range failures {
@@ -220,7 +223,7 @@ func (s *Service) runCheckinAll(ctx context.Context) {
 	}
 	logger.Info("checkin: starting for all accounts")
 	count := 0
-	s.forEachAccount(ctx, "", func(ctx context.Context, account *accountContext) error {
+	s.forEachAccount(ctx, "", nil, func(ctx context.Context, account *accountContext) error {
 		if !core.SupportsCheckinFor(account.vendor, account.credential) {
 			return nil
 		}
@@ -262,7 +265,7 @@ func (s *Service) runCheckinAll(ctx context.Context) {
 func (s *Service) runScheduledFamily(ctx context.Context, kind string) {
 	logger.Info("%s: starting for all accounts", kind)
 	count := 0
-	s.forEachAccount(ctx, "", func(ctx context.Context, account *accountContext) error {
+	s.forEachAccount(ctx, "", nil, func(ctx context.Context, account *accountContext) error {
 		if kind == core.TaskKindKeepalive {
 			result := s.keepaliveOne(ctx, "", account)
 			if !result.OK {
@@ -361,7 +364,7 @@ func (s accountScan) MarshalJSON() ([]byte, error) {
 
 // scanAllAccounts 并发扫描每个账号的待办任务。
 func (s *Service) scanAllAccounts(ctx context.Context, callbackID string) []accountScan {
-	loaded := s.collectAccounts(ctx, callbackID)
+	loaded := s.collectAccounts(ctx, callbackID, nil)
 	scans := auth.RunBatch(loaded, queueMaxConcurrency, func(account *accountContext) accountScan {
 		return s.scanOneAccount(ctx, account)
 	})
@@ -486,7 +489,7 @@ func (s *Service) runQueueItems(callbackID string, concurrency int, seq int64) {
 	}()
 
 	ctx := context.Background()
-	loaded := s.collectAccounts(ctx, callbackID)
+	loaded := s.collectAccounts(ctx, callbackID, nil)
 	byUID := make(map[string]*accountContext, len(loaded))
 	for _, account := range loaded {
 		byUID[account.uid()] = account
@@ -656,10 +659,10 @@ func (s *Service) runAutoAll(ctx context.Context, account *accountContext) []aut
 	return results
 }
 
-// collectAccounts 收集本插件名下的可用账号。
-func (s *Service) collectAccounts(ctx context.Context, callbackID string) []*accountContext {
+// collectAccounts 收集本插件名下的可用账号；targets 为空表示全部。
+func (s *Service) collectAccounts(ctx context.Context, callbackID string, targets []string) []*accountContext {
 	accounts := make([]*accountContext, 0, 8)
-	s.forEachAccount(ctx, callbackID, func(_ context.Context, account *accountContext) error {
+	s.forEachAccount(ctx, callbackID, targets, func(_ context.Context, account *accountContext) error {
 		accounts = append(accounts, account)
 		return nil
 	})
@@ -673,7 +676,7 @@ func (s *Service) findAccount(ctx context.Context, callbackID, identifier string
 		return nil
 	}
 	var found *accountContext
-	s.forEachAccount(ctx, callbackID, func(_ context.Context, account *accountContext) error {
+	s.forEachAccount(ctx, callbackID, nil, func(_ context.Context, account *accountContext) error {
 		if found != nil {
 			return nil
 		}
@@ -689,7 +692,7 @@ func (s *Service) findAccount(ctx context.Context, callbackID, identifier string
 
 // activityStatusForAccounts 返回各账号的活动任务状态（供管理页展示）。
 func (s *Service) activityStatusForAccounts(ctx context.Context, callbackID string) []map[string]any {
-	loaded := s.collectAccounts(ctx, callbackID)
+	loaded := s.collectAccounts(ctx, callbackID, nil)
 	out := auth.RunBatch(loaded, queueMaxConcurrency, func(target *accountContext) map[string]any {
 		entry := map[string]any{
 			"uid":   target.uid(),

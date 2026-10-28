@@ -103,6 +103,7 @@ func (s *Service) managementRoutes(prefix string) []pluginapi.ManagementRoute {
 		{Method: "POST", Path: prefix + "/checkin", Description: "对指定或全部账号执行签到。"},
 		{Method: "POST", Path: prefix + "/quotas", Description: "批量查询账号额度。"},
 		{Method: "POST", Path: prefix + "/accounts/delete", Description: "删除指定账号的凭证文件（宿主监听 auth 目录，会自动注销该账号）。"},
+		{Method: "POST", Path: prefix + "/accounts/enabled", Description: "批量启用/停用账号（写凭证上的 disabled 标记，不删除文件、不动 token）。"},
 		{Method: "POST", Path: prefix + "/accounts/add", Description: "添加 API Key 类账号。"},
 		{Method: "POST", Path: prefix + "/accounts/alias", Description: "给账号设置/清除自定义展示别名（别名优先于上游昵称显示）。"},
 		{Method: "GET", Path: prefix + "/models", Description: "读取当前注册的模型清单。"},
@@ -174,6 +175,9 @@ func (s *Service) Handle(request []byte) ([]byte, error) {
 
 	case method == http.MethodPost && matchesManagementPath(rpc.Path, id.ID, "/accounts/delete"):
 		return core.OKEnvelope(s.handleAccountDeleteRequest(rpc))
+
+	case method == http.MethodPost && matchesManagementPath(rpc.Path, id.ID, "/accounts/enabled"):
+		return core.OKEnvelope(s.handleAccountEnabledRequest(rpc))
 
 	case method == http.MethodPost && matchesManagementPath(rpc.Path, id.ID, "/accounts/add"):
 		return core.OKEnvelope(s.handleAccountAddRequest(rpc))

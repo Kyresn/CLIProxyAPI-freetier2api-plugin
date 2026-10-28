@@ -64,6 +64,11 @@ type accountSummary struct {
 	// Label 是**展示名**，链：账号别名 → 上游 label → host label → 文件名 → ID。
 	// 别名是第一优先级，未设置时行为与引入别名之前完全一致。
 	Label string `json:"label"`
+	// NativeLabel 是去掉别名后的上游名称（上游 label → host label → 文件名 → ID）。
+	//
+	// 页面需要它来判断「用户填的名字是否就是原名」：填回原名不该存成一条
+	// 与上游永远同步不了的别名。展示链里别名会覆盖 Label，因此必须单独给出。
+	NativeLabel string `json:"native_label,omitempty"`
 	// Alias 是用户自定义别名；空表示未设置。页面据此决定是否跳过 API key
 	// 脱敏（别名是用户起的名字，不是凭证）。
 	Alias           string               `json:"alias,omitempty"`
@@ -140,12 +145,14 @@ func (s *Service) listAccountSummaries(ctx context.Context, callbackID string) [
 		vendor := account.Vendor
 		uid := credential.FileIDValue()
 		alias := strings.TrimSpace(current.AccountAliases[uid])
+		native := core.FirstNonEmpty(credential.LabelValue(), entry.Label, entry.Name, entry.ID)
 		summary := accountSummary{
 			AuthID:          core.FirstNonEmpty(entry.ID, entry.Name),
 			AuthIndex:       entry.AuthIndex,
 			FileID:          uid,
 			Alias:           alias,
-			Label:           core.FirstNonEmpty(alias, credential.LabelValue(), entry.Label, entry.Name, entry.ID),
+			Label:           core.FirstNonEmpty(alias, native),
+			NativeLabel:     native,
 			VendorID:        vendor.ID(),
 			VendorName:      vendor.Name(),
 			Realm:           credential.RegionValue(),
@@ -236,6 +243,79 @@ type accountBatchRequest struct {
 	AccountIDs []string `json:"account_ids"`
 }
 
+// accountEnabledRequest 是启用/停用账号的请求体。
+type accountEnabledRequest struct {
+	AccountIDs []string `json:"account_ids"`
+	Enabled    bool     `json:"enabled"`
+}
+
+// handleAccountEnabledRequest 批量启用/停用账号。
+//
+// 停用不是删除：凭证文件保留，只在 JSON 上写宿主认的 "disabled" 字段，宿主
+// 扫盘后该账号不再参与路由；启用即删掉该字段。两者都不动 token，随时可逆。
+func (s *Service) handleAccountEnabledRequest(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	body, errDecode := decodeRequest[accountEnabledRequest](req.Body)
+	if errDecode != nil {
+		return BadJSONRequestResponse()
+	}
+	if len(body.AccountIDs) == 0 {
+		return JSONResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "account_ids 不能为空"})
+	}
+	ctx, cancel := hostbridge.ManagementContext(req, requestTimeout)
+	defer cancel()
+	callbackID := hostbridge.RequestCallbackID(req)
+
+	entries, errList := hostbridge.ListAuths(ctx, callbackID, s.registry)
+	if errList != nil {
+		return JSONResponse(http.StatusOK, map[string]any{"ok": false, "error": "读取账号列表失败：" + errList.Error()})
+	}
+	wanted := wantedAccountIDs(body.AccountIDs)
+	results := make([]accountActionResult, 0, len(body.AccountIDs))
+	changed := 0
+	for _, entry := range entries {
+		if !wanted.matches(entry) || entry.Disabled == !body.Enabled {
+			// 已经是目标状态的不重复写盘：宿主扫盘会再触发一次重载。
+			continue
+		}
+		result := accountActionResult{
+			AuthID: core.FirstNonEmpty(entry.ID, entry.Name),
+			Label:  core.FirstNonEmpty(entry.Label, entry.Name, entry.ID),
+		}
+		if errSet := s.setAuthDisabled(ctx, callbackID, entry, !body.Enabled); errSet != nil {
+			result.Message = errSet.Error()
+			results = append(results, result)
+			continue
+		}
+		result.OK = true
+		if body.Enabled {
+			result.Message = "已启用"
+		} else {
+			result.Message = "已禁用"
+		}
+		changed++
+		results = append(results, result)
+	}
+	return JSONResponse(http.StatusOK, map[string]any{"ok": true, "changed": changed, "results": results})
+}
+
+// wantedAccountIDs 把页面提交的账号标识集合包成匹配器。
+//
+// 页面用 auth_id 作为勾选键（账号表里的唯一稳定标识），但宿主的三个标识
+// （ID / Name / AuthIndex）都可能在重扫后变化，统一在这里比对一次。
+func wantedAccountIDs(targets []string) accountIDSet {
+	set := make(accountIDSet, len(targets))
+	for _, target := range targets {
+		set[strings.TrimSpace(target)] = true
+	}
+	return set
+}
+
+type accountIDSet map[string]bool
+
+func (s accountIDSet) matches(entry core.HostAuth) bool {
+	return s[entry.ID] || s[entry.Name] || s[entry.AuthIndex]
+}
+
 func (s *Service) handleAccountDeleteRequest(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	body, errDecode := decodeRequest[accountBatchRequest](req.Body)
 	if errDecode != nil {
@@ -252,14 +332,11 @@ func (s *Service) handleAccountDeleteRequest(req pluginapi.ManagementRequest) pl
 	if errList != nil {
 		return JSONResponse(http.StatusOK, map[string]any{"ok": false, "error": "读取账号列表失败：" + errList.Error()})
 	}
-	wanted := make(map[string]bool, len(body.AccountIDs))
-	for _, target := range body.AccountIDs {
-		wanted[strings.TrimSpace(target)] = true
-	}
+	wanted := wantedAccountIDs(body.AccountIDs)
 	results := make([]accountActionResult, 0, len(body.AccountIDs))
 	deleted := 0
 	for _, entry := range entries {
-		if !wanted[entry.ID] && !wanted[entry.Name] && !wanted[entry.AuthIndex] {
+		if !wanted.matches(entry) {
 			continue
 		}
 		result := accountActionResult{
@@ -285,7 +362,7 @@ func (s *Service) deleteAuthFile(ctx context.Context, callbackID string, entry c
 	if !okRaw {
 		return fmt.Errorf("读取凭证失败，无法确认归属")
 	}
-	targetPath, errSafe := safeAuthFileForDelete(s.registry, entry, raw, core.FirstNonEmpty(filePath, entry.Path))
+	targetPath, errSafe := safeAuthFilePath(s.registry, entry, raw, core.FirstNonEmpty(filePath, entry.Path))
 	if errSafe != nil {
 		return errSafe
 	}
@@ -293,6 +370,31 @@ func (s *Service) deleteAuthFile(ctx context.Context, callbackID string, entry c
 		return fmt.Errorf("删除文件失败：%w", errRemove)
 	}
 	logger.Info("deleted auth file %s (vendor=%s)", filepath.Base(targetPath), entry.Name)
+	return nil
+}
+
+// setAuthDisabled 在凭证文件上写/清 disabled 标记。
+//
+// 写回沿用凭证保存的两条路径（见 authfile.go）：优先 host.auth.save，宿主会
+// 同时更新磁盘与内存注册表；不可用时才直接写盘，让宿主自己扫到。校验与删除
+// 同源——先确认这份凭证属于本插件、路径是可写的普通 .json。
+func (s *Service) setAuthDisabled(ctx context.Context, callbackID string, entry core.HostAuth, disabled bool) error {
+	raw, filePath, okRaw := hostbridge.AuthJSONAndPath(ctx, callbackID, entry.AuthIndex)
+	if !okRaw {
+		return fmt.Errorf("读取凭证失败，无法确认归属")
+	}
+	targetPath, errSafe := safeAuthFilePath(s.registry, entry, raw, core.FirstNonEmpty(filePath, entry.Path))
+	if errSafe != nil {
+		return errSafe
+	}
+	updated, errUpdate := setCredentialDisabled(raw, disabled)
+	if errUpdate != nil {
+		return errUpdate
+	}
+	if errSave := saveAuthFile(callbackID, filepath.Base(targetPath), updated); errSave != nil {
+		return errSave
+	}
+	logger.Info("auth file %s disabled=%t (vendor=%s)", filepath.Base(targetPath), disabled, entry.Name)
 	return nil
 }
 

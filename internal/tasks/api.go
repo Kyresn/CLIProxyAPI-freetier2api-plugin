@@ -113,9 +113,9 @@ func (s *Service) RunAuto(ctx context.Context, callbackID, identifier, code stri
 	}, http.StatusOK
 }
 
-// RunAutoAll 对全部账号依次执行一键完成。
-func (s *Service) RunAutoAll(ctx context.Context, callbackID string) map[string]any {
-	loaded := s.collectAccounts(ctx, callbackID)
+// RunAutoAll 对指定账号（targets 为空表示全部）依次执行一键完成。
+func (s *Service) RunAutoAll(ctx context.Context, callbackID string, targets []string) map[string]any {
+	loaded := s.collectAccounts(ctx, callbackID, targets)
 	if len(loaded) == 0 {
 		return map[string]any{"ok": true, "accounts": 0, "message": "没有可用账号"}
 	}

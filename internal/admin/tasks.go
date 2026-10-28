@@ -52,9 +52,14 @@ func (s *Service) handleTasksAuto(req pluginapi.ManagementRequest) pluginapi.Man
 }
 
 func (s *Service) handleTasksAutoAll(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	// 空请求体 = 全部账号；勾选了账号时页面传 account_ids 限定范围。
+	body, errDecode := decodeRequest[accountBatchRequest](req.Body)
+	if errDecode != nil {
+		return BadJSONRequestResponse()
+	}
 	ctx, cancel := hostbridge.ManagementContext(req, requestTimeout)
 	defer cancel()
-	return JSONResponse(http.StatusOK, s.tasks.RunAutoAll(ctx, hostbridge.RequestCallbackID(req)))
+	return JSONResponse(http.StatusOK, s.tasks.RunAutoAll(ctx, hostbridge.RequestCallbackID(req), body.AccountIDs))
 }
 
 func (s *Service) handleSchoolStatus(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {

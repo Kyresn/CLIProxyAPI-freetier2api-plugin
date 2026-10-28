@@ -1,14 +1,15 @@
 package admin
 
-// 本文件是凭证文件的两条唯一入口：
-//   - saveAuthFile：落盘（添加账号、粘贴回调登录）；
-//   - safeAuthFileForDelete：删除前的全部校验。
+// 本文件是凭证文件的唯一入口：
+//   - saveAuthFile：落盘（添加账号、粘贴回调登录、启用/停用）；
+//   - safeAuthFilePath：改写或删除前的全部校验。
 //
 // 「添加 API Key 账号」与「粘贴 localhost 回调完成登录」两条路径都要把一份凭证
-// 交给宿主，只有走这里才不会各自长出一套「宿主写 + 兜底写盘」的副本。删除同理：
-// 路径归一化在 hostbridge 边界完成，这里只负责「这个路径能不能删」。
+// 交给宿主，只有走这里才不会各自长出一套「宿主写 + 兜底写盘」的副本。启用/停用
+// 与删除同理：路径归一化在 hostbridge 边界完成，这里只负责「这个路径能不能动」。
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,7 +56,8 @@ func saveAuthFile(callbackID, fileName string, raw []byte) error {
 	return fmt.Errorf("host.auth.save 不可用且落盘失败（%s）", name)
 }
 
-// safeAuthFileForDelete 校验一个凭证文件是否可以被删除，返回要删的绝对路径。
+// safeAuthFilePath 校验一个凭证文件是否归本插件所有且可安全改写/删除，
+// 返回绝对路径。
 //
 // 入参 path 必须已经是 hostbridge 归一化过的路径（ListAuths / AuthJSONAndPath
 // 的出口都会做这件事）；这里不再换算，只校验——同一件事在两个层各做一次，
@@ -66,11 +68,11 @@ func saveAuthFile(callbackID, fileName string, raw []byte) error {
 //     → 直接拒绝；
 //  2. 路径必须是绝对的；文件必须存在——**不存在不能当成功**：静默返回 nil 会让
 //     页面显示「已删除」而账号其实还在；
-//  3. 只删普通 `.json` 文件：符号链接、目录、别的扩展名一律拒绝；
+//  3. 只认普通 `.json` 文件：符号链接、目录、别的扩展名一律拒绝；
 //  4. 目标文件里的凭证必须与宿主给的凭证是同一个账号（vendor + UID）——路径
 //     归一化用的是进程工作目录，基准不一致时同名文件可能属于另一个账号。
 //     只比对身份字段，不读取或记录 token。
-func safeAuthFileForDelete(registry *core.Registry, entry core.HostAuth, raw []byte, path string) (string, error) {
+func safeAuthFilePath(registry *core.Registry, entry core.HostAuth, raw []byte, path string) (string, error) {
 	hostCred, okHost := registry.ParseCredential(raw, hostbridge.AccountIdentity(entry), nil)
 	if !okHost {
 		return "", fmt.Errorf("该凭证不属于本插件，拒绝删除")
@@ -120,4 +122,29 @@ func sameCredentialIdentity(hostCred, fileCred *core.Credential) bool {
 	}
 	hostUID, fileUID := hostCred.UIDValue(), fileCred.UIDValue()
 	return hostUID == "" || fileUID == "" || hostUID == fileUID
+}
+
+// setCredentialDisabled 在凭证 JSON 上设置/清除宿主的 disabled 标记。
+//
+// 宿主扫盘时只看凭证文件里的 "disabled" 字段（见 file synthesizer）：置 true
+// 的凭证不再参与路由，删掉该字段即恢复。插件的启用/停用因此只能落在这个字段上，
+// 没有第二条通道。
+//
+// 用 map[string]json.RawMessage 而不是 map[string]any：只增删一个键，其余字段
+// 原样保留字节，float64 往返不会让超过 2^53 的整数（上游 uid）丢精度。
+func setCredentialDisabled(raw []byte, disabled bool) ([]byte, error) {
+	var payload map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(raw, &payload); errUnmarshal != nil || payload == nil {
+		return nil, fmt.Errorf("凭证不是合法的 JSON 对象")
+	}
+	if disabled {
+		payload["disabled"] = json.RawMessage("true")
+	} else {
+		delete(payload, "disabled")
+	}
+	updated, errMarshal := json.MarshalIndent(payload, "", "  ")
+	if errMarshal != nil {
+		return nil, errMarshal
+	}
+	return updated, nil
 }

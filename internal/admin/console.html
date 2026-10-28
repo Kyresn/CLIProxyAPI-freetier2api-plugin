@@ -299,10 +299,18 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
           <button class="act primary" id="btnAddAccount">添加账号 ▾</button>
           <div class="dropdown-menu" id="addVendorMenu" hidden></div>
         </div>
+        <button class="act" id="btnDisableAccounts">禁用选中</button>
+        <button class="act" id="btnEnableAccounts">启用选中</button>
+        <button class="act" id="btnSelectAllAccounts">全选</button>
+        <button class="act" id="btnSelectNoneAccounts">清空</button>
         <button class="act" id="btnRefresh">Token续期</button>
         <button class="act" id="btnLoadQuotas">查询额度</button>
         <button class="act" id="btnCheckin">一键签到</button>
         <button class="act primary" id="btnAutoAll">一键做任务</button>
+        <button class="act danger" id="btnDeleteAccounts" disabled>删除</button>
+      </div>
+      <div class="hint">
+        勾选账号后可批量禁用 / 启用 / 删除；未勾选时 Token 续期、查询额度、一键签到、一键做任务作用于全部账号。
       </div>
 
       <div class="card" id="smsBox" hidden>
@@ -681,6 +689,9 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     });
   }
 
+  // identity 是行内编辑器的默认归一函数：原样返回输入。
+  function identity(value) { return value; }
+
   function el(tag, text, className) {
     var node = document.createElement(tag);
     if (text !== undefined && text !== null) node.textContent = String(text);
@@ -725,12 +736,14 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   //   prefill()   编辑框预填值（已保存时一律用 saved）
   //   placeholder 预填为空时的提示
   //   mono        展示文本是否用等宽字体
+  //   normalize(next) 把输入映射成真正落库的值；返回空串表示清除
   //   title(saved) 展示态悬浮提示
   //   save(next)  保存；返回 Promise，解析出 false 表示未保存（静默回退），
   //               reject 表示保存失败（横幅提示 + 回退）
   function editableCell(opts) {
     var cell = el("td");
     var saved = opts.saved || "";
+    var normalize = opts.normalize || identity;
     var wrap = el("span", null, "editable");
     wrap.setAttribute("role", "button");
     wrap.setAttribute("tabindex", "0");
@@ -769,9 +782,12 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       function finish(commit, focusBack) {
         if (done) return;
         done = true;
-        var next = commit ? (input.value || "").trim() : saved;
-        // 预填值原样提交等于没改：不落库，避免把默认值存成一条多余别名。
-        if (next === initial || next === saved) { restore(focusBack); return; }
+        // 归一先于比较：opts.normalize 定义「这个值实际意味着什么」（留空清除、
+        // 填回原名等同清除），调用点不必各自判重。
+        var next = normalize(commit ? (input.value || "").trim() : saved);
+        // 没改就不落库：等于当前值，或等于归一后的预填值（预填是「当前生效值」，
+        // 原样提交不该变成一条新记录）。
+        if (!commit || next === saved || next === normalize(initial)) { restore(focusBack); return; }
         input.disabled = true;
         opts.save(next).then(function (ok) {
           if (ok === false) { restore(focusBack); return; }
@@ -884,48 +900,122 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     return text.slice(0, 4) + "***" + text.slice(-4);
   }
 
+  // accountOriginalName 是账号在上游的原始名称（未设别名时展示的文本），
+  // 名称未知时返回空串，由调用方决定怎么占位。
+  //
+  // 取后端的 native_label 而不是 label：label 在设了别名后就是别名本身，
+  // 拿它比较会让「填回原名」永远判不出来。
+  // API key 类账号的 label 就是 key 本身（添加时用户没给昵称），必须脱敏；
+  // 因此编辑框预填的也是脱敏后的文本，而不是把明文 key 放进页面 DOM。
+  // 其余账号显示昵称/邮箱。
+  function accountOriginalName(account) {
+    var native = account.native_label || "";
+    var vendor = vendorsById[account.vendor_id];
+    if (vendor && vendor.auth_mode === "apikey") {
+      return maskAccount(native || account.auth_id || "");
+    }
+    return native || account.auth_id || "";
+  }
+
   // accountDisplay 决定一个账号在表里显示什么：别名优先，未设置时用上游名称。
   //
   // 别名是用户自己起的名字，不是凭证，原样显示、不做脱敏。这里直接取 alias
   // 而不是 label：改完别名后页面不重新拉 /status 也要立刻显示新名字，且清除
   // 别名时 label 仍是上游名称，无需页面自己记住"原来的名字"。
-  // 未设别名时：API key 类账号的 label 就是 key 本身（添加时用户没给昵称），
-  // 必须脱敏；其余账号显示昵称/邮箱。
   function accountDisplay(account) {
-    if (account.alias) return account.alias;
-    var vendor = vendorsById[account.vendor_id];
-    if (vendor && vendor.auth_mode === "apikey") {
-      return maskAccount(account.label || account.auth_id || "");
-    }
-    return account.label || account.auth_id || "-";
+    return account.alias || accountOriginalName(account) || "-";
   }
 
   // accountNameCell 渲染「账号名 + ✎」行内编辑，交互复用模型 ID 那一套
   // （editableCell），别名按账号身份（file_id）保存到 /accounts/alias。
   //
-  // 编辑框只预填已保存的别名，不预填上游名称：把邮箱原样存成别名等于多一份
-  // 永远不同步的副本，还会让「是否设置过别名」失去意义。没有 file_id 的账号
-  // （非文件来源）不可编辑。
+  // 编辑框预填当前生效的名称（已设别名取别名，否则取上游名称），与模型别名
+  // 一致，省去重敲。留空、或填回原名称，都视为「不要别名」：把上游名称原样
+  // 存成别名只会多一份永不随上游变化的副本，还让「是否设置过别名」失去意义，
+  // 因此 normalize 一律把它们归一成空串（清除记录）。
+  // 没有 file_id 的账号（非文件来源）不可编辑。
   function accountNameCell(account) {
     if (!account.file_id) return el("td", accountDisplay(account));
     return editableCell({
       saved: account.alias || "",
       fallback: function () { return accountDisplay(account); },
-      prefill: function () { return ""; },
+      prefill: function () { return accountOriginalName(account); },
       placeholder: "留空使用上游名称",
+      normalize: function (next) { return next === accountOriginalName(account) ? "" : next; },
       title: function (saved) {
         return saved
-          ? "点击编辑账号别名（留空恢复上游名称）"
-          : "点击设置账号别名（留空即用上游名称）";
+          ? "点击编辑账号别名（留空或与原名称相同则清除）"
+          : "点击设置账号别名（留空或与原名称相同则不设置）";
       },
       save: function (next) {
         return api("POST", "/accounts/alias", { file_id: account.file_id, alias: next }).then(function (data) {
           if (!data) return false;
           account.alias = next;
-          return true;
+          return next;
         });
       }
     });
+  }
+
+  // accountKey 返回账号在勾选与批量操作里的标识。
+  //
+  // 用 auth_id（宿主 entry.ID / Name）而不是 file_id：批量端点与删除端点在
+  // 宿主侧按 ID / Name / AuthIndex 匹配，auth_id 是页面能拿到的、始终存在的那个。
+  function accountKey(account) {
+    return String(account.auth_id || account.auth_index || account.file_id || "");
+  }
+
+  // selectedAccounts 记录勾选的账号（键为 auth_id）。
+  //
+  // 账号表每次动作后都会重渲染，勾选状态因此存在这里而不是只留在 DOM 上：
+  // 连续执行「禁用选中 → 删除」这类批量流程时不必重新勾选。
+  var selectedAccounts = {};
+
+  function accountCheckCell(account) {
+    var key = accountKey(account);
+    var cell = el("td");
+    var checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = !!selectedAccounts[key];
+    checkbox.setAttribute("data-account-id", key);
+    checkbox.addEventListener("change", function () {
+      if (checkbox.checked) selectedAccounts[key] = true;
+      else delete selectedAccounts[key];
+      syncAccountSelection();
+    });
+    cell.appendChild(checkbox);
+    return cell;
+  }
+
+  // selectedAccountIDs 取当前勾选的账号（用于批量操作）。
+  function selectedAccountIDs() {
+    return Object.keys(selectedAccounts);
+  }
+
+  // syncAccountSelection 在勾选变化后同步按钮可用态。
+  //
+  // 删除是破坏性操作，没有勾选时禁用；其余批量按钮允许「不勾选 = 全部账号」，
+  // 因此始终可用。
+  function syncAccountSelection() {
+    var count = selectedAccountIDs().length;
+    var delBtn = document.getElementById("btnDeleteAccounts");
+    if (delBtn) {
+      delBtn.disabled = count === 0;
+      if (count === 0) { delBtn.textContent = "删除"; deleteArmed = false; }
+      else if (!deleteArmed) delBtn.textContent = "删除（" + count + "）";
+    }
+  }
+
+  // setAllAccountsSelected 勾选/取消全部账号（作用于当前表格里的每一行）。
+  function setAllAccountsSelected(selected) {
+    selectedAccounts = {};
+    Array.prototype.forEach.call(
+      document.querySelectorAll("#accounts input[type=checkbox][data-account-id]"),
+      function (box) {
+        box.checked = selected;
+        if (selected) selectedAccounts[box.getAttribute("data-account-id")] = true;
+      });
+    syncAccountSelection();
   }
 
   // checkinStatusPill 把签到历史的状态映射成胶囊：成功（绿）/ 已签到（中性）/ 失败（红）。
@@ -969,6 +1059,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     var accounts = (status && status.accounts) || [];
     setText("accountCount", accounts.length ? "（" + accounts.length + " 个）" : "");
     if (!accounts.length) {
+      selectedAccounts = {};
+      syncAccountSelection();
       host.appendChild(el("div", "没有账号。请在 CPA 面板的「添加认证」里选择 FreeTier 2API，或在控制台页发起登录。", "muted"));
       return;
     }
@@ -989,7 +1081,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 
     var table = el("table");
     var head = el("tr");
-    ["供应商", "账号", "状态", "签到", "剩余 / 总额", "使用率", "刷新时间", "操作"]
+    ["", "状态", "供应商", "账号", "签到", "剩余 / 总额", "使用率", "刷新时间"]
       .forEach(function (name) { head.appendChild(el("th", name)); });
     table.appendChild(head);
 
@@ -997,13 +1089,15 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       var row = el("tr");
       // historyRow 是该账号的展开行（无历史或未展开时为 null / hidden）。
       var historyRow = null;
+      row.appendChild(accountCheckCell(account));
+      row.appendChild(cellWith(account.disabled ? pill("已禁用", "err") : pill("正常", "ok")));
+
       var vendor = vendorLabel(account.vendor_id, account.realm);
       var vendorCell = el("td");
       vendorCell.appendChild(pill(vendor, vendorChipClass(account.vendor_id, vendor)));
       row.appendChild(vendorCell);
 
       row.appendChild(accountNameCell(account));
-      row.appendChild(cellWith(account.disabled ? pill("已禁用", "err") : pill("正常", "ok")));
 
       // 签到 / 套餐领取列：支持领取的供应商（如 ZCode）展示套餐领取按钮；其余展示签到或「无签到活动」
       var claimSpec = claimButtonSpec(account);
@@ -1095,16 +1189,6 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       var rt = account.refreshed_at ? new Date(account.refreshed_at).toLocaleString() : "-";
       row.appendChild(el("td", rt, "muted"));
 
-      // 操作列（仅保留删除）
-      var actionCell = el("td");
-      var deleteBtn = el("button", "删除", "act danger");
-      deleteBtn.type = "button";
-      deleteBtn.addEventListener("click", function () {
-        deleteAccount(account, deleteBtn);
-      });
-      actionCell.appendChild(deleteBtn);
-      row.appendChild(actionCell);
-
       table.appendChild(row);
       // 展开行紧随账号行：展开/收起只影响这一个账号，不重排整张表。
       if (historyRow) table.appendChild(historyRow);
@@ -1114,6 +1198,15 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     var summary = el("div", "共 " + accounts.length + " 个账号 · 插件版本 " + (status.version || "-")
       + " · 提示词 " + ((status.settings || {}).prompt_mode || "-"), "hint");
     host.appendChild(summary);
+
+    // 表格重建后重新对齐勾选状态：已消失的账号（被删/被禁用后退出列表）
+    // 不能继续留在选中集合里，否则下一次批量动作会带上不存在的目标。
+    var present = {};
+    accounts.forEach(function (account) { present[accountKey(account)] = true; });
+    Object.keys(selectedAccounts).forEach(function (key) {
+      if (!present[key]) delete selectedAccounts[key];
+    });
+    syncAccountSelection();
   }
 
   // loadStatus 拉取账号状态并渲染账号表，返回 Promise 以便调用方串行编排。
@@ -1180,41 +1273,67 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     });
   }
 
-  // deleteAccount 删除一个账号（带确认）。
+  // deleteArmed 记录「删除」按钮是否已进入确认态（5 秒后自动复位）。
+  var deleteArmed = false;
+
+  // deleteSelectedAccounts 批量删除勾选的账号（两次点击确认）。
   //
   // 删除的是凭证文件：宿主用 fsnotify 监听 auth 目录，删掉文件后会自动
   // 注销该账号，不需要额外通知。删除不可恢复，必须让用户确认一次；
   // 按钮状态用全局标志记下「已确认」，避免误点。
-  var deleteArmed = false;
-
-  function deleteAccount(account, btn) {
-    var displayName = accountDisplay(account);
+  function deleteSelectedAccounts(btn) {
+    var ids = selectedAccountIDs();
+    if (!ids.length) return;
     if (!deleteArmed) {
       deleteArmed = true;
-      banner("warn", "再次点击「删除」确认删除账号「" + displayName + "」（不可恢复）");
+      banner("warn", "再次点击「删除」确认删除选中的 " + ids.length + " 个账号（不可恢复）");
       btn.textContent = "确认删除";
       setTimeout(function () {
         deleteArmed = false;
-        btn.textContent = "删除";
+        syncAccountSelection();
       }, 5000);
       return;
     }
     deleteArmed = false;
-    btn.textContent = "删除";
-    api("POST", "/accounts/delete", { account_ids: [account.auth_id || account.auth_index] })
+    btn.disabled = true;
+    api("POST", "/accounts/delete", { account_ids: ids })
       .then(function (data) {
         if (!data) return;
-        var result = (data.results || []).filter(function (r) { return r.auth_id === account.auth_id || r.auth_id === account.auth_index; })[0];
-        banner(result && result.ok ? "ok" : "err", result ? (result.message || "已删除") : (data.error || "删除失败"));
-        // 删除后立即重新拉状态，让该账号从列表消失。
+        var results = data.results || [];
+        var failed = results.filter(function (r) { return !r.ok; });
+        banner(failed.length ? "warn" : "ok",
+          failed.length
+            ? "已删除 " + (results.length - failed.length) + " 个账号，" + failed.length + " 个失败：" + failed[0].message
+            : (data.error || ("已删除 " + (data.deleted || ids.length) + " 个账号")), 8000);
+        // 成功的从选中集合移除；失败的保留勾选，便于重试。
+        results.forEach(function (r) { if (r.ok) delete selectedAccounts[r.auth_id]; });
+        // 删除后立即重新拉状态，让已删账号从列表消失。
         loadStatus(true).catch(function () { });
       })
-      .catch(function (err) { banner("err", err.message); });
+      .catch(function (err) { banner("err", err.message); })
+      .then(function () { syncAccountSelection(); });
+  }
+
+  // toggleSelectedAccounts 批量启用/停用勾选的账号。
+  //
+  // 停用只写凭证上的 disabled 标记（宿主扫盘后不再路由到它），文件与 token
+  // 都保留，随时可以再启用——与删除是两件事。
+  function toggleSelectedAccounts(disabled) {
+    var ids = selectedAccountIDs();
+    if (!ids.length) { banner("err", "请先勾选账号"); return; }
+    var verb = disabled ? "禁用" : "启用";
+    api("POST", "/accounts/enabled", { account_ids: ids, enabled: !disabled }).then(function (data) {
+      if (!data) return;
+      var failed = (data.results || []).filter(function (r) { return !r.ok; });
+      banner(failed.length ? "warn" : "ok",
+        failed.length ? verb + "失败：" + failed[0].message : "已" + verb + " " + (data.changed || 0) + " 个账号", 8000);
+      loadStatus(true).catch(function () { });
+    }).catch(function (err) { banner("err", err.message); });
   }
 
   // ---- 额度 ----
 
-  // loadQuotas 查询全部账号额度。
+  // loadQuotas 查询账号额度（targets 为空表示全部）。
   //
   // 结果**不由页面截留**：后端查询时就把每个账号的结果写进自己的缓存，
   // /status 下一次返回的 accounts[].quota 即是权威数据。页面若再存一份，
@@ -1223,9 +1342,9 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   //
   // quiet 为 true 时不弹横幅——进入页面会自动跑一次，那时不需要打扰用户；
   // 手动点按钮时才给反馈。
-  function loadQuotas(quiet) {
-    if (!quiet) banner("ok", "正在查询全部账号额度…", 0);
-    return api("POST", "/quotas", {}).then(function (data) {
+  function loadQuotas(quiet, targets) {
+    if (!quiet) banner("ok", "正在查询账号额度…", 0);
+    return api("POST", "/quotas", { account_ids: targets || [] }).then(function (data) {
       if (!data) return;
       var results = (data && data.results) || [];
       var failed = results.filter(function (r) { return !r.ok; }).length;
@@ -2674,9 +2793,10 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   });
   document.getElementById("btnRefresh").addEventListener("click", function () {
     var btn = this;
+    var ids = selectedAccountIDs();
     btn.disabled = true;
-    banner("ok", "正在向各供应商发起全账号 Token 续期刷新，请稍候…", 0);
-    api("POST", "/keepalive", {}).then(function (res) {
+    banner("ok", "正在发起 " + (ids.length ? ids.length + " 个账号" : "全账号") + " 的 Token 续期刷新，请稍候…", 0);
+    api("POST", "/keepalive", { account_ids: ids }).then(function (res) {
       if (!res) return;
       if (res.failed > 0 && res.succeeded === 0) {
         banner("err", "Token 续期失败：" + (res.message || "上游拒绝"));
@@ -2692,7 +2812,12 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       btn.disabled = false;
     });
   });
-  document.getElementById("btnLoadQuotas").addEventListener("click", function () { loadQuotas(false); });
+  document.getElementById("btnLoadQuotas").addEventListener("click", function () { loadQuotas(false, selectedAccountIDs()); });
+  document.getElementById("btnDisableAccounts").addEventListener("click", function () { toggleSelectedAccounts(true); });
+  document.getElementById("btnEnableAccounts").addEventListener("click", function () { toggleSelectedAccounts(false); });
+  document.getElementById("btnSelectAllAccounts").addEventListener("click", function () { setAllAccountsSelected(true); });
+  document.getElementById("btnSelectNoneAccounts").addEventListener("click", function () { setAllAccountsSelected(false); });
+  document.getElementById("btnDeleteAccounts").addEventListener("click", function () { deleteSelectedAccounts(this); });
   document.getElementById("btnLoadModels").addEventListener("click", function () { refreshModels(false); });
 
   // ---- 模型表列展示 ----
@@ -2760,12 +2885,14 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   });
 
 
-  // 全部账号依次一键完成。
+  // 勾选的账号（未勾选时为全部）依次一键完成。
   //
   // 这是耗时操作（含真实对话），因此先让用户确认；请求期间按钮禁用，
   // 避免重复触发（后端也有账号级互斥，但界面上的反馈更直接）。
   document.getElementById("btnAutoAll").addEventListener("click", function () {
-    if (!window.confirm("将对全部账号依次执行成长任务一键完成。\n\n"
+    var ids = selectedAccountIDs();
+    var scope = ids.length ? ids.length + " 个选中账号" : "全部账号";
+    if (!window.confirm("将对" + scope + "依次执行成长任务一键完成。\n\n"
       + "专家类、技能、夜猫子任务含真实对话，会消耗账号额度；\n"
       + "每个账号约需 1-2 分钟，账号多时请耐心等待。\n\n确认继续？")) {
       return;
@@ -2773,7 +2900,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     var btn = this;
     btn.disabled = true;
     banner("ok", "已开始逐账号执行一键完成，请勿关闭页面…", 0);
-    api("POST", "/tasks/auto_all", {}).then(function (data) {
+    api("POST", "/tasks/auto_all", { account_ids: ids }).then(function (data) {
       if (!data) return;
       var lines = [];
       ((data && data.results) || []).forEach(function (entry) {
@@ -2794,7 +2921,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     var btn = this;
     btn.disabled = true;
     banner("ok", "签到已在后台开始，请稍候…", 0);
-    api("POST", "/checkin", {}).then(function (result) {
+    api("POST", "/checkin", { account_ids: selectedAccountIDs() }).then(function (result) {
       var results = (result && result.results) || [];
       if (!results.length) {
         banner("ok", "当前没有需要签到的账号", 5000);
@@ -2818,7 +2945,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       }
       // 签到手上有新积分，但账号表读的是后端额度缓存（上一次 /quotas 的
       // 结果），不重查就会一直显示签到前的数字。loadQuotas 结束时会重拉账号表。
-      loadQuotas(true);
+      loadQuotas(true, selectedAccountIDs());
     }).catch(function (err) {
       banner("err", "签到失败：" + err.message, 8000);
     }).then(function () {

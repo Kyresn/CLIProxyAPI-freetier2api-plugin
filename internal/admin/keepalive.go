@@ -16,11 +16,15 @@ import (
 )
 
 func (s *Service) handleKeepaliveRequest(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	// 空请求体 / 空 account_ids = 全部账号；勾选了账号时页面只传选中的那些。
+	body, errDecode := decodeRequest[accountBatchRequest](req.Body)
+	if errDecode != nil {
+		return BadJSONRequestResponse()
+	}
 	ctx, cancel := hostbridge.ManagementContext(req, requestTimeout)
 	defer cancel()
 
-	// targets 传 nil：端点语义一直是「全部账号」，请求体不参与筛选。
-	results := s.tasks.Keepalive(ctx, hostbridge.RequestCallbackID(req), nil, batchConcurrency)
+	results := s.tasks.Keepalive(ctx, hostbridge.RequestCallbackID(req), body.AccountIDs, batchConcurrency)
 	if len(results) == 0 {
 		return JSONResponse(http.StatusOK, map[string]any{
 			"ok": true, "message": "没有需要续期的可用账号", "succeeded": 0, "failed": 0, "results": []any{},

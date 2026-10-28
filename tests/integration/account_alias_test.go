@@ -15,9 +15,10 @@ import (
 
 // aliasAccount 只保留别名相关的字段。
 type aliasAccount struct {
-	FileID string `json:"file_id"`
-	Label  string `json:"label"`
-	Alias  string `json:"alias"`
+	FileID      string `json:"file_id"`
+	Label       string `json:"label"`
+	NativeLabel string `json:"native_label"`
+	Alias       string `json:"alias"`
 }
 
 func aliasAccountsByFileID(t *testing.T) map[string]aliasAccount {
@@ -92,5 +93,22 @@ func TestAccountAliasWinsDisplayAndIsolatesAccounts(t *testing.T) {
 	setAccountAlias(t, "traecn-shared", "")
 	if got := aliasAccountsByFileID(t)["traecn-shared"]; got.Label != "shared-account" || got.Alias != "" {
 		t.Fatalf("clearing an alias must restore the upstream name: %+v", got)
+	}
+}
+
+// TestAccountNativeLabelStaysUpstream 锁定 native_label 的语义：它始终是上游名称，
+// 不随别名变化——页面靠它判断「填回原名 = 不设别名」。
+func TestAccountNativeLabelStaysUpstream(t *testing.T) {
+	host := installFakeHost(t)
+	setupTestPlugin(t)
+	host.addAccount("1", "traecn-native.json", traecnSharedCredential("test-access-token"))
+
+	setAccountAlias(t, "traecn-native", "工作号")
+	account := aliasAccountsByFileID(t)["traecn-native"]
+	if account.Label != "工作号" || account.Alias != "工作号" {
+		t.Fatalf("aliased account = %+v, want label 工作号", account)
+	}
+	if account.NativeLabel != "shared-account" {
+		t.Fatalf("native_label = %q, want 上游名称 shared-account", account.NativeLabel)
 	}
 }

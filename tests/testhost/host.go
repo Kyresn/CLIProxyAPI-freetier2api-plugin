@@ -88,6 +88,8 @@ func (h *Host) Call(callbackID, method string, payload any) (json.RawMessage, er
 		return marshalJSON(map[string]any{"auths": h.SnapshotAuthFiles()})
 	case pluginabi.MethodHostAuthGet:
 		return h.handleAuthGet(payload)
+	case pluginabi.MethodHostAuthSave:
+		return h.handleAuthSave(payload)
 	case pluginabi.MethodHostStreamEmit:
 		return h.handleStreamEmit(payload)
 	case pluginabi.MethodHostStreamClose:
@@ -289,6 +291,47 @@ func (h *Host) handleAuthGet(payload any) (json.RawMessage, error) {
 		JSON      json.RawMessage `json:"json"`
 	}{AuthIndex: req.AuthIndex, Path: path, JSON: json.RawMessage(raw)}
 	return marshalJSON(response)
+}
+
+// handleAuthSave 模拟 host.auth.save：把凭证写进宿主内存注册表。
+//
+// 假宿主没有磁盘 auth 目录，因此只更新 authJSON，并按 JSON 里的 disabled
+// 字段同步 authFiles 的禁用状态——启用/停用账号的端到端行为靠这一步可观测。
+func (h *Host) handleAuthSave(payload any) (json.RawMessage, error) {
+	var req struct {
+		Name string          `json:"name"`
+		JSON json.RawMessage `json:"json"`
+	}
+	if errUnmarshal := json.Unmarshal(mustMarshal(payload), &req); errUnmarshal != nil {
+		return nil, errUnmarshal
+	}
+	var fields map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(req.JSON, &fields); errUnmarshal != nil {
+		return nil, errUnmarshal
+	}
+	var disabled bool
+	_ = json.Unmarshal(fields["disabled"], &disabled)
+
+	h.mu.Lock()
+	for index := range h.authFiles {
+		if h.authFiles[index].Name != req.Name && h.authFiles[index].ID != req.Name {
+			continue
+		}
+		h.authFiles[index].Disabled = disabled
+		h.authJSON[h.authFiles[index].AuthIndex] = string(req.JSON)
+	}
+	path := h.authPaths[resolvedAuthIndex(h, req.Name)]
+	h.mu.Unlock()
+	return marshalJSON(map[string]any{"name": req.Name, "path": path})
+}
+
+func resolvedAuthIndex(h *Host, name string) string {
+	for _, entry := range h.authFiles {
+		if entry.Name == name || entry.ID == name {
+			return entry.AuthIndex
+		}
+	}
+	return ""
 }
 
 func (h *Host) handleStreamEmit(payload any) (json.RawMessage, error) {
