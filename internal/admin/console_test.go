@@ -615,6 +615,8 @@ func TestConsoleAccountsTableSupportsBatchSelection(t *testing.T) {
 		`id="btnSelectAllAccounts"`,
 		`id="btnSelectNoneAccounts"`,
 		`"/accounts/enabled"`,
+		`id="accountFilter"`,
+		"function accountMatchesFilter(account, filter)",
 	} {
 		if !strings.Contains(page, literal) {
 			t.Fatalf("console page missing account batch wiring %q", literal)

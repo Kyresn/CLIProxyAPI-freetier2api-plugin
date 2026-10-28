@@ -120,10 +120,11 @@ Aliases are stored in `state.json` under `account_aliases`, keyed by account ide
 
 ### 5. Account Batch Actions
 
-The Accounts table has a selection column like the Models table. The toolbar reads **Add account / Disable selected / Enable selected / Select all / Clear / Token refresh / Query quota / Check in / Run tasks / Delete**:
+The Accounts table has a selection column like the Models table. The toolbar reads **Add account / Disable selected / Enable selected / Select all / Clear / Token refresh / Query quota / Check in / Run tasks / Delete**, followed by a filter box that matches provider, account name, alias or file name (never credential contents):
 
 - Nothing is selected by default. Delete is disabled while the selection is empty, and Token refresh, Query quota, Check in and Run tasks act on **all accounts**;
 - With a selection, those actions only touch the selected accounts. The selection survives table refreshes, and accounts that disappear drop out of it automatically;
+- Filtering only changes which rows are visible: Select all / Clear act on the visible rows, accounts hidden by the filter keep their selection, and batch actions still run against the full selection;
 - Disabling is not deleting: it only writes the host's `disabled` flag into the credential JSON (token and file are kept, so it is reversible). Delete removes the credential file;
 - Delete still takes two clicks: the first arms the button (auto-reset after 5 seconds), the second deletes.
 

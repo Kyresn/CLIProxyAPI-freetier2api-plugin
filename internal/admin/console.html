@@ -308,6 +308,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         <button class="act" id="btnCheckin">一键签到</button>
         <button class="act primary" id="btnAutoAll">一键做任务</button>
         <button class="act danger" id="btnDeleteAccounts" disabled>删除</button>
+        <label>筛选 <input type="text" id="accountFilter" placeholder="如 workbuddy / 邮箱" style="width:160px"></label>
       </div>
       <div class="hint">
         勾选账号后可批量禁用 / 启用 / 删除；未勾选时 Token 续期、查询额度、一键签到、一键做任务作用于全部账号。
@@ -1006,14 +1007,18 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     }
   }
 
-  // setAllAccountsSelected 勾选/取消全部账号（作用于当前表格里的每一行）。
+  // setAllAccountsSelected 勾选/取消**当前可见**的账号（与模型表的全选同一语义）。
+  //
+  // 被筛选隐藏的行不动它们的勾选：筛选只决定看得见哪些行，不该顺手改掉
+  // 看不见的账号的选中状态。
   function setAllAccountsSelected(selected) {
-    selectedAccounts = {};
     Array.prototype.forEach.call(
       document.querySelectorAll("#accounts input[type=checkbox][data-account-id]"),
       function (box) {
         box.checked = selected;
-        if (selected) selectedAccounts[box.getAttribute("data-account-id")] = true;
+        var key = box.getAttribute("data-account-id");
+        if (selected) selectedAccounts[key] = true;
+        else delete selectedAccounts[key];
       });
     syncAccountSelection();
   }
@@ -1053,19 +1058,52 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     return tr;
   }
 
+  // accountMatchesFilter 判断账号是否命中筛选框。
+  //
+  // 只匹配页面上看得到的那些字段（供应商、账号名、别名、身份标识），不匹配
+  // token 一类的凭证内容：筛选是为了找人，不是为了翻凭证。
+  function accountMatchesFilter(account, filter) {
+    if (!filter) return true;
+    var vendor = vendorLabel(account.vendor_id, account.realm);
+    var text = [
+      String(account.auth_id || ""),
+      String(account.file_id || ""),
+      String(account.alias || ""),
+      String(account.native_label || ""),
+      vendor
+    ].join(" ").toLowerCase();
+    return text.indexOf(filter) >= 0;
+  }
+
   function renderAccounts(status) {
     var host = document.getElementById("accounts");
     host.textContent = "";
     var accounts = (status && status.accounts) || [];
-    setText("accountCount", accounts.length ? "（" + accounts.length + " 个）" : "");
+    // 勾选集合按**全部账号**对齐，而不是筛选后的视图：把账号筛掉只是不显示，
+    // 不该静默取消勾选（否则「筛一批 → 全选 → 清空筛选 → 执行」会漏目标）。
+    var present = {};
+    accounts.forEach(function (account) { present[accountKey(account)] = true; });
+    Object.keys(selectedAccounts).forEach(function (key) {
+      if (!present[key]) delete selectedAccounts[key];
+    });
+
+    var filter = (document.getElementById("accountFilter").value || "").trim().toLowerCase();
+    var visible = accounts.filter(function (account) { return accountMatchesFilter(account, filter); });
+    setText("accountCount", accounts.length
+      ? "（" + (filter ? visible.length + " / " + accounts.length : accounts.length) + " 个）"
+      : "");
     if (!accounts.length) {
-      selectedAccounts = {};
       syncAccountSelection();
       host.appendChild(el("div", "没有账号。请在 CPA 面板的「添加认证」里选择 FreeTier 2API，或在控制台页发起登录。", "muted"));
       return;
     }
+    if (!visible.length) {
+      syncAccountSelection();
+      host.appendChild(el("div", "没有匹配「" + filter + "」的账号。", "muted"));
+      return;
+    }
     // 排序：供应商名称 + 账号 ID（同一供应商聚合展示，供应商内按账号 ID 升序）
-    accounts.sort(function (a, b) {
+    visible.sort(function (a, b) {
       var vendorA = vendorLabel(a.vendor_id, a.realm);
       var vendorB = vendorLabel(b.vendor_id, b.realm);
       if (vendorA !== vendorB) {
@@ -1085,7 +1123,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       .forEach(function (name) { head.appendChild(el("th", name)); });
     table.appendChild(head);
 
-    accounts.forEach(function (account) {
+    visible.forEach(function (account) {
       var row = el("tr");
       // historyRow 是该账号的展开行（无历史或未展开时为 null / hidden）。
       var historyRow = null;
@@ -1195,17 +1233,11 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     });
     host.appendChild(table);
 
-    var summary = el("div", "共 " + accounts.length + " 个账号 · 插件版本 " + (status.version || "-")
+    var summary = el("div", "共 " + accounts.length + (filter ? " 个账号（显示 " + visible.length + " 个）" : " 个账号")
+      + " · 插件版本 " + (status.version || "-")
       + " · 提示词 " + ((status.settings || {}).prompt_mode || "-"), "hint");
     host.appendChild(summary);
 
-    // 表格重建后重新对齐勾选状态：已消失的账号（被删/被禁用后退出列表）
-    // 不能继续留在选中集合里，否则下一次批量动作会带上不存在的目标。
-    var present = {};
-    accounts.forEach(function (account) { present[accountKey(account)] = true; });
-    Object.keys(selectedAccounts).forEach(function (key) {
-      if (!present[key]) delete selectedAccounts[key];
-    });
     syncAccountSelection();
   }
 
@@ -2873,6 +2905,10 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   document.addEventListener("click", closeModelColumnsMenu);
 
   document.getElementById("modelFilter").addEventListener("input", renderModels);
+  // 账号筛选只重渲染本地已有数据，不发请求（与模型筛选同一套路）。
+  document.getElementById("accountFilter").addEventListener("input", function () {
+    if (lastStatus) renderAccounts(lastStatus);
+  });
   document.getElementById("btnDisableModels").addEventListener("click", function () { toggleModels(true); });
   document.getElementById("btnEnableModels").addEventListener("click", function () { toggleModels(false); });
   document.getElementById("btnSelectAllModels").addEventListener("click", function () {
