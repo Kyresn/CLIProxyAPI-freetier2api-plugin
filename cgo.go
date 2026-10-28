@@ -61,6 +61,7 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 	"unsafe"
 
@@ -105,25 +106,57 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 		return 1
 	}
 	methodName := C.GoString(method)
-	var raw []byte
-	var errHandle error
-	if methodName == pluginabi.MethodResponseNormalizeBefore {
-		// The normalizer is synchronous and read-only; its input remains valid
-		// until this call returns. Avoid copying the complete request per chunk.
-		raw, errHandle = handleBorrowedResponseNormalize(unsafe.Pointer(request), uintptr(requestLen))
-	} else {
-		var requestBytes []byte
-		if request != nil && requestLen > 0 {
-			requestBytes = C.GoBytes(unsafe.Pointer(request), C.int(requestLen))
-		}
-		raw, errHandle = handleMethod(methodName, requestBytes)
+	requestBytes, errRequest := hostRequestBytes(methodName, unsafe.Pointer(request), uintptr(requestLen))
+	if errRequest != nil {
+		writeResponse(response, core.ErrorEnvelopeFromError(errRequest))
+		return 1
 	}
+	raw, errHandle := handleMethod(methodName, requestBytes)
 	if errHandle != nil {
 		writeResponse(response, core.ErrorEnvelopeFromError(errHandle))
 		return 1
 	}
 	writeResponse(response, raw)
 	return 0
+}
+
+// isReadOnlyRequestMethod 判断该方法能否在同步调用期间只读借用宿主缓冲区。
+//
+// 名单里的方法必须满足：不修改入参、不保存任何切片片段、不在调用返回后
+// （含 goroutine）继续访问。用 switch 而不是包级 map，避免引入可变包级状态；
+// 新增方法在这里加一个 case，不要在 ABI 入口里再长一个 if。
+func isReadOnlyRequestMethod(method string) bool {
+	switch method {
+	case pluginabi.MethodResponseNormalizeBefore:
+		return true
+	}
+	return false
+}
+
+// hostRequestBytes 把宿主请求缓冲区转成 Go 切片。
+//
+// 默认复制一份（C.GoBytes）；只有 isReadOnlyRequestMethod 认定的方法直接借用
+// 宿主缓冲区——响应归一化钩子对每条 SSE 行都调用一次，参数里带着两份完整
+// 请求体（长上下文下可达数 MB），复制会成为与请求大小成正比的固定开销。
+//
+// 借用得到的切片只在 handleMethod 的同步调用栈内有效：调用方不得修改它，
+// 也不得把它保存到调用返回之后。指向 nil、长度为 0 都按空请求处理；
+// 指针为 nil 却给了长度属于宿主契约违约，明确报错而不是静默当成空请求。
+func hostRequestBytes(method string, request unsafe.Pointer, requestLen uintptr) ([]byte, error) {
+	if request == nil {
+		if requestLen > 0 {
+			return nil, core.NewPluginError("invalid_request",
+				"request pointer is null but request length is non-zero", http.StatusBadRequest)
+		}
+		return nil, nil
+	}
+	if requestLen == 0 {
+		return nil, nil
+	}
+	if isReadOnlyRequestMethod(method) {
+		return unsafe.Slice((*byte)(request), requestLen), nil
+	}
+	return C.GoBytes(request, C.int(requestLen)), nil
 }
 
 // cliproxyPluginFree 释放插件用 C.CBytes 分配的响应缓冲区，由宿主调用。

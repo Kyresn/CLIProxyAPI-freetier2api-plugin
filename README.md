@@ -161,6 +161,7 @@ package main / cgo        C ABI 入口（main.go / cgo.go）
 - 供应商包只允许依赖 `core`（契约）+ `hostbridge`（宿主通信）+ `logger`（日志），多一个都不行。
 - `internal/core` 只依赖标准库；`internal/app` 是最上层，且只有 `internal/app/vendors.go` 可以 import 具体供应商。
 - 新增内部包必须显式声明分层边界（`layerRules` / `internalPackages`）。
+- 根包（C ABI）的单测与源码同目录（`cgo_test.go`；宿主内存 / 只读页用例在 POSIX 上的 `cgo_hostbuffer_test.go`），不放进 `tests/`。
 
 ## 致谢与第三方说明
 

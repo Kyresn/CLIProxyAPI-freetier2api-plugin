@@ -161,6 +161,7 @@ package main / cgo        C ABI entry (main.go / cgo.go)
 - Vendor packages may depend only on `core` + `hostbridge` + `logger`.
 - `internal/core` depends only on the standard library; only `internal/app/vendors.go` may import concrete vendors.
 - Every new internal package must declare its layer boundary (`layerRules` / `internalPackages`).
+- Root-package (C ABI) tests live beside the source (`cgo_test.go`; host-buffer and read-only-page cases in `cgo_hostbuffer_test.go` on POSIX), not under `tests/`.
 
 ## Acknowledgments & Third-Party Notices
 
