@@ -2,13 +2,13 @@ package trae
 
 // 本文件实现 Trae 家族的每日签到与额度查询。
 //
-// 签到（国内版 / SOLO，国际版无此活动）：
+// 签到（仅国内版；国际版无此活动）：
 //   - 先 POST checkin_credits/status 查今日状态（enable / checked_in / credits）；
 //   - 未签到再 POST checkin_credits/claim 领取。claim 对「今日已签到」同样返回
 //     code=0，因此「已签到」只能由 status 判定，status 预查是必要流程。
 //   - 业务码 9074 是设备级限流（不是已签到），按限流错误上抛。
 //
-// 额度（国内版 / SOLO）：POST pay/ide_user_ent_usage 取权益包列表，
+// 额度（仅国内版）：POST pay/ide_user_ent_usage 取权益包列表，
 // 只统计 product_type=2 的积分包（credits_limit=-1 表示无限）。
 
 import (
@@ -266,18 +266,13 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 		}
 	}
 
-	plan, tier := "Trae 国内版权益", "Standard"
-	if cfg.Solo {
-		plan, tier = "TRAE SOLO 权益包", "SOLO"
-	}
-
 	// 键名必须落在 auth.Totals 的词表内（credit_remain / credit_total /
 	// credit_used），否则控制台的「剩余 / 总额」会静默显示 0 / 0。
 	// 供应商包不能 import auth（分层约定），所以这里按约定手写同名键。
 	response := &pluginapi.QuotaFetchResponse{
 		Subscription: &pluginapi.QuotaSubscription{
-			Plan:     plan,
-			TierName: tier,
+			Plan:     "Trae 国内版权益",
+			TierName: "Standard",
 			TierID:   cfg.VendorID,
 		},
 		Summary: []pluginapi.QuotaMetric{

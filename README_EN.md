@@ -15,7 +15,7 @@ If this project helps you, a Star would mean a lot.
 ## Features
 
 - Native integration with CLIProxyAPI's Anthropic `/v1/messages`, OpenAI `/v1/chat/completions`, and OpenAI `/v1/responses` endpoints without running a separate gateway service
-- Supports 16 free-tier provider instances across 8 vendor families (AutoClaw CN/Global and Raccoon included) with strict per-vendor credential isolation (capped at 10 accounts per provider)
+- Supports 15 free-tier provider instances across 8 vendor families (AutoClaw CN/Global and Raccoon included) with strict per-vendor credential isolation (capped at 10 accounts per provider)
 - Dynamic model catalog discovery, custom model aliases, and cross-provider load balancing / failover
 - Built-in single-page Web console for OAuth device login, localhost callback paste, API Key import, account aliases, quota tracking, check-in history, model toggling, and live logs
 - Automated daily check-in, automated daily tasks, and token keepalive refresh
@@ -35,7 +35,6 @@ If this project helps you, a Star would mean a lot.
 | `opencodezen` | OpenCode ZEN | `global` | API Key | `opencodezen-*.json` |
 | `cline` | Cline | `global` | WorkOS Device Flow | `cline-*.json` |
 | `zcode` | ZCode | `global` | OAuth CLI Flow | `zcode-*.json` |
-| `traesolo` | TRAE SOLO | `cn` | OAuth Flow | `traesolo-*.json` |
 | `traecn` | Trae CN | `cn` | OAuth Flow | `traecn-*.json` |
 | `traeglobal` | Trae Global | `global` | OAuth Flow | `traeglobal-*.json` |
 | `codearts` | CodeArts | `cn` | OAuth Flow | `codearts-*.json` |

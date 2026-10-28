@@ -1,8 +1,8 @@
 package trae
 
-// 本文件把 Trae 国内版、Trae 国际版与 TRAE SOLO 适配成 core.Vendor。
+// 本文件把 Trae 国内版与 Trae 国际版适配成 core.Vendor。
 //
-// 三个实例共享同一套协议实现，差异由 Config/profile 描述。
+// 两个实例共享同一套协议实现，差异由 Config/profile 描述。
 
 import (
 	"context"
@@ -19,8 +19,8 @@ type adapter struct {
 	// config 是构造期的 profile，只读。
 	config Config
 	// ideVersion 是 IDE 版本号的配置覆盖；空串表示沿用 config 的编译期默认值。
-	// 三个实例的版本线互不相同（CN 3.3.x / global 3.3.x / SOLO 0.1.x），
-	// 所以配置键按实例 ID 区分（见 Configure），不能共用族级键。
+	// 两个实例的版本线不同（CN / global 各自是 3.3.x），所以配置键按实例 ID 区分
+	// （见 Configure），不能共用族级键。
 	ideVersionMu   sync.RWMutex
 	ideVersion     string
 	ideVersionCode string
@@ -76,10 +76,7 @@ func newInstance(env core.Env, cfg Config, sessions *SessionStore) core.Vendor {
 				label := native.Label
 				if label == "" {
 					prefix := "TraeCN-"
-					switch {
-					case cfg.Solo:
-						prefix = "TRAESOLO-"
-					case cfg.Region == RegionGlobal:
+					if cfg.Region == RegionGlobal {
 						prefix = "TraeGlobal-"
 					}
 					if native.Nickname != "" {

@@ -550,6 +550,10 @@ func (c *Catalog) probeVendor(vendor core.Vendor, done chan struct{}) {
 }
 
 // LoadCachedState 从 state.json 恢复全部供应商的模型缓存，并通知供应商预热。
+//
+// 已下线供应商的条目直接丢弃：缓存是按 vendor_id 落盘的，供应商被移除后
+// 这些条目再也没有读取方，留着只会随 CachedState 一轮轮写回 state.json，
+// 让控制台与配置里长期挂着一批不存在的模型。
 func (c *Catalog) LoadCachedState(cached []core.CachedModel) {
 	entries := map[string]cachedVendor{}
 	for _, item := range cached {
@@ -557,6 +561,9 @@ func (c *Catalog) LoadCachedState(cached []core.CachedModel) {
 			continue
 		}
 		vendorID := cachedVendorID(item)
+		if _, okVendor := c.registry.ByID(vendorID); !okVendor {
+			continue
+		}
 		entry := entries[vendorID]
 		// 复用注册转换，能力字段（图片、工具、参数）与实时探测保持同一来源；
 		// 手工拼 ModelInfo 会漏掉 SupportedInputModalities / SupportedParameters，

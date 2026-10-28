@@ -315,19 +315,15 @@ func TestApplyTraeHeadersSetsIDEIdentity(t *testing.T) {
 	}
 }
 
-func TestSoloProfileUsesSoloFunctionAndVersions(t *testing.T) {
-	cfg := SoloConfig()
-	if cfg.Function != "solo_agent" {
-		t.Fatalf("SOLO function = %q, want solo_agent", cfg.Function)
-	}
-	if cfg.IDEVersion != IDEVersionSolo || cfg.IDEVersionCode != IDEVersionCodeSolo {
-		t.Fatalf("SOLO 版本号不对: %q / %q", cfg.IDEVersion, cfg.IDEVersionCode)
-	}
-	if !cfg.supportsCheckin() {
-		t.Error("SOLO 应支持签到")
+func TestProfileCheckinSupport(t *testing.T) {
+	if !ConfigFor(RegionCN).supportsCheckin() {
+		t.Error("国内版应支持签到")
 	}
 	if ConfigFor(RegionGlobal).supportsCheckin() {
 		t.Error("国际版不应支持签到")
+	}
+	if cfg := ConfigFor(RegionCN); cfg.Function != "chat_v3" {
+		t.Fatalf("国内版 function = %q, want chat_v3", cfg.Function)
 	}
 }
 
@@ -540,8 +536,9 @@ func TestFetchCatalogFiltersAndResolvesWireIDs(t *testing.T) {
 
 // TestFetchCatalogUsesChatFunction 锁定目录请求的 function 必须与对话侧一致。
 //
-// 上游按 function 维护两套 wire id 命名空间：目录取 solo_work_lite 的
-// deepseek_v4_pro__dev 再发 chat_v3 对话会被判 4023 model is unknown。
+// 上游按 function 维护两套 wire id 命名空间：目录若取了另一套（如
+// solo_work_lite 的 deepseek_v4_pro__dev）再发 chat_v3 对话，会被判
+// 4023 model is unknown。
 func TestFetchCatalogUsesChatFunction(t *testing.T) {
 	stubHost(t)
 	var gotBody map[string]any
@@ -578,9 +575,9 @@ func TestConfigureOverridesIDEVersion(t *testing.T) {
 	inst.Configure(core.Settings{}, map[string]string{
 		"traecn_ide_version":      "9.9.9",
 		"traecn_ide_version_code": "20990101",
-		// SOLO 是另一条产品线，族级/其它实例的键都不能生效。
-		"trae_ide_version":     "1.1.1",
-		"traesolo_ide_version": "2.2.2",
+		// 族级键与其它实例的键都不能生效。
+		"trae_ide_version":       "1.1.1",
+		"traeglobal_ide_version": "2.2.2",
 	})
 	if got := inst.profile(); got.IDEVersion != "9.9.9" || got.IDEVersionCode != "20990101" {
 		t.Fatalf("覆盖未生效: %q / %q", got.IDEVersion, got.IDEVersionCode)

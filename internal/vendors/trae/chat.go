@@ -1,12 +1,11 @@
 package trae
 
-// 本文件实现 Trae 家族（Trae 国内版 / Trae 国际版 / TRAE SOLO）的对话转发：
+// 本文件实现 Trae 家族（Trae 国内版 / Trae 国际版）的对话转发：
 // 请求体改写、IDE 请求头装配与 SSE 事件转换。
 //
 // 协议基线：TraeCode CN 桌面端 llm_raw_chat（与 Trae2api-cn 参考实现对齐），
-// 三个实例共享同一套协议实现，差异由 Config/profile 描述：
+// 两个实例共享同一套协议实现，差异由 Config/profile 描述：
 //   - 国内版（traecn）：raw_chat_function=chat_v3，IDE 版本 3.3.104
-//   - TRAE SOLO（traesolo）：raw_chat_function=solo_agent，SOLO 版本 0.1.52
 //   - 国际版（traeglobal）：与国内版同协议，仅域名与 client_id 不同；
 //     国际版无签到/额度活动（上游 404），由 tasks.go 区分处理。
 
@@ -38,10 +37,7 @@ const (
 	VendorNameCN     = "Trae 国内版"
 	VendorIDGlobal   = "traeglobal"
 	VendorNameGlobal = "Trae 国际版"
-	VendorIDSolo     = "traesolo"
-	VendorNameSolo   = "TRAE SOLO"
 
-	// 国内版 / SOLO（TRAE SOLO 与国内版共用同一模型网关）
 	HostChatCN    = "https://trae-api-cn.mchost.guru"
 	HostAuthCN    = "https://api.trae.cn"
 	HostConsoleCN = "https://www.trae.cn"
@@ -49,7 +45,7 @@ const (
 	// 国内版 IDE 版本号。上游按构建号（X-Ide-Version-Code）下发不同模型目录：
 	// 20260806 起才有 deepseek-v4.1-flash，更早的构建号会被降级成旧清单。
 	// 这两个值可用 <实例ID>_ide_version / <实例ID>_ide_version_code 覆盖（见 adapter.Configure），
-	// 例如 traecn_ide_version_code；三条产品线版本体系不同，必须按实例配置。
+	// 例如 traecn_ide_version_code；两条产品线版本体系不同，必须按实例配置。
 	IDEVersionCN = "3.3.104"
 	// IDEVersionCodeCN 是国内版 IDE 的构建号，与 X-Ide-Version-Code 一起下发。
 	IDEVersionCodeCN = "20260922"
@@ -62,17 +58,10 @@ const (
 	IDEVersionGlobal     = "3.3.67"
 	IDEVersionCodeGlobal = "20260401"
 
-	// TRAE SOLO
-	HostAuthSolo       = HostAuthCN
-	HostConsoleSolo    = HostConsoleCN
-	ClientIDSolo       = ClientIDCN
-	IDEVersionSolo     = "0.1.52"
-	IDEVersionCodeSolo = "20260811"
-	FunctionSolo       = "solo_agent"
-	DeviceBrandSolo    = "83DG"
-	OSVersionSolo      = "Windows 11 Pro"
+	// DeviceBrandCN 是国内版上报的设备型号。
+	DeviceBrandCN = "83DG"
 
-	// 公共端点路径（三个实例共用）
+	// 公共端点路径（两个实例共用）
 	EpChat          = "/api/ide/v2/llm_raw_chat"
 	EpModels        = "/api/ide/v1/get_detail_param"
 	EpExchange      = "/cloudide/api/v3/trae/oauth/ExchangeToken"
@@ -103,10 +92,8 @@ type Config struct {
 	Function       string
 	DefaultModel   string
 	AppID          string
-	DeviceBrand    string
-	OSVersion      string
-
-	Solo bool
+	// DeviceBrand 只用于模型目录请求（get_detail_param 要求带设备型号）。
+	DeviceBrand string
 }
 
 // ConfigFor 返回国内/国际版默认配置（保留给协议层测试使用）。
@@ -147,7 +134,7 @@ func ConfigFor(r Region) Config {
 		Function:       "chat_v3",
 		DefaultModel:   "glm-5.2",
 		AppID:          AppID,
-		DeviceBrand:    DeviceBrandSolo,
+		DeviceBrand:    DeviceBrandCN,
 	}
 }
 
@@ -158,45 +145,19 @@ func ConfigForVendor(vendorID string) (Config, bool) {
 		return ConfigFor(RegionCN), true
 	case VendorIDGlobal:
 		return ConfigFor(RegionGlobal), true
-	case VendorIDSolo:
-		return SoloConfig(), true
 	default:
 		return Config{}, false
 	}
 }
 
-// SoloConfig 返回 TRAE SOLO profile。
-func SoloConfig() Config {
-	return Config{
-		VendorID:       VendorIDSolo,
-		VendorName:     VendorNameSolo,
-		Region:         RegionCN,
-		ChatHost:       HostChatCN,
-		AuthHost:       HostAuthSolo,
-		RefreshHost:    HostAuthSolo,
-		CheckinHost:    HostAuthSolo,
-		QuotaHost:      HostAuthSolo,
-		ConsoleHost:    HostConsoleSolo,
-		ClientID:       ClientIDSolo,
-		IDEVersion:     IDEVersionSolo,
-		IDEVersionCode: IDEVersionCodeSolo,
-		Function:       FunctionSolo,
-		DefaultModel:   "glm-5.2",
-		AppID:          AppID,
-		DeviceBrand:    DeviceBrandSolo,
-		OSVersion:      OSVersionSolo,
-		Solo:           true,
-	}
-}
-
-// AllConfigs 返回三个实例的 profile，顺序与历史注册顺序一致。
+// AllConfigs 返回两个实例的 profile，顺序与历史注册顺序一致。
 func AllConfigs() []Config {
-	return []Config{ConfigFor(RegionCN), ConfigFor(RegionGlobal), SoloConfig()}
+	return []Config{ConfigFor(RegionCN), ConfigFor(RegionGlobal)}
 }
 
 func (c Config) clientUA() string { return "Trae/" + c.IDEVersion }
 
-func (c Config) supportsCheckin() bool { return c.Solo || c.Region == RegionCN }
+func (c Config) supportsCheckin() bool { return c.Region == RegionCN }
 
 func configForCredential(cred *Credential) Config {
 	if cred == nil {
@@ -254,10 +215,6 @@ func ApplyTraeHeaders(req *http.Request, cred *Credential, cfg Config, stream bo
 	req.Header.Set("X-Device-Type", "windows")
 	req.Header.Set("Request-Traffic-Type", "prod")
 	req.Header.Set("User-Agent", cfg.clientUA())
-	if cfg.Solo {
-		req.Header.Set("X-Device-Brand", cfg.DeviceBrand)
-		req.Header.Set("X-OS-Version", cfg.OSVersion)
-	}
 	if cred.MachineID != "" {
 		req.Header.Set("X-Machine-Id", cred.MachineID)
 	}

@@ -56,6 +56,7 @@ func newTestCatalog(t *testing.T) *Catalog {
 	for _, vendor := range []core.Vendor{
 		&fakeVendor{Meta: core.Meta{VendorID: "workbuddycn", VendorName: "WB CN", VendorRegion: "cn"}},
 		&fakeVendor{Meta: core.Meta{VendorID: "workbuddyglobal", VendorName: "WB Global", VendorRegion: "global"}},
+		&fakeVendor{Meta: core.Meta{VendorID: "codearts", VendorName: "CodeArts", VendorRegion: "cn"}},
 	} {
 		if err := registry.Register(vendor); err != nil {
 			t.Fatal(err)
@@ -269,6 +270,31 @@ func TestLoadCachedStateRestoresCapabilities(t *testing.T) {
 	for _, param := range []string{"tools", "tool_choice"} {
 		if !slices.Contains(info.SupportedParameters, param) {
 			t.Fatalf("params = %#v，缺 %q", info.SupportedParameters, param)
+		}
+	}
+}
+
+// TestLoadCachedStateDropsRemovedVendor 锁定「已下线供应商不再复活」。
+//
+// 缓存按 vendor_id 落盘，供应商被移除（如 TRAE SOLO 并入国内版）后这些条目
+// 再也没有读取方；若照样回灌，CachedState 会把它们一轮轮写回 state.json，
+// 控制台与禁用清单里就会长期挂着一批不存在的模型。
+func TestLoadCachedStateDropsRemovedVendor(t *testing.T) {
+	manager := newTestCatalog(t)
+	manager.LoadCachedState([]core.CachedModel{
+		{VendorID: "traesolo", ID: "glm-5.2"},
+		{VendorID: "workbuddycn", ID: "glm-5.3"},
+	})
+
+	if got := manager.Registered("traesolo"); len(got) != 0 {
+		t.Fatalf("removed vendor restored %d model(s)", len(got))
+	}
+	if got := manager.Registered("workbuddycn"); len(got) != 1 {
+		t.Fatalf("live vendor cached models = %d, want 1", len(got))
+	}
+	for _, item := range manager.CachedState() {
+		if item.VendorID == "traesolo" {
+			t.Fatal("removed vendor must not be written back to state.json")
 		}
 	}
 }

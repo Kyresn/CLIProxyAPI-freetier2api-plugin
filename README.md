@@ -15,7 +15,7 @@
 ## 功能特性
 
 - 复用宿主 Anthropic `/v1/messages`、OpenAI `/v1/chat/completions` 与 OpenAI `/v1/responses` 接口，无需额外部署独立网关
-- 支持 8 大体系共 16 个国内外免费额度供应商实例（AutoClaw 国内/国际与小浣熊已接入），凭证严格按供应商隔离（单供应商上限 10 个账号）
+- 支持 8 大体系共 15 个国内外免费额度供应商实例（AutoClaw 国内/国际与小浣熊已接入），凭证严格按供应商隔离（单供应商上限 10 个账号）
 - 模型清单动态探测、自定义模型别名与跨供应商同名模型自动负载均衡/故障转移
 - 内嵌单页 Web 控制台：支持 OAuth 设备授权 / 本地回调粘贴 / API Key 添加账号、账号自定义别名、额度可视化、签到历史回溯、模型启停与运行日志
 - 支持每日自动签到、每日自动任务与 Token 自动续期保活
@@ -35,7 +35,6 @@
 | `opencodezen` | OpenCode ZEN | `global` | API Key | `opencodezen-*.json` |
 | `cline` | Cline | `global` | WorkOS 设备授权 | `cline-*.json` |
 | `zcode` | ZCode | `global` | OAuth CLI 授权 | `zcode-*.json` |
-| `traesolo` | TRAE SOLO | `cn` | OAuth 授权 | `traesolo-*.json` |
 | `traecn` | Trae 国内版 | `cn` | OAuth 授权 | `traecn-*.json` |
 | `traeglobal` | Trae 国际版 | `global` | OAuth 授权 | `traeglobal-*.json` |
 | `codearts` | CodeArts | `cn` | OAuth 授权 | `codearts-*.json` |

@@ -21,8 +21,8 @@ import (
 //
 // 守卫的问题：宿主靠 AuthLoginStartResponse.Metadata 里的 vendor 字段把登录
 // 会话绑定回具体供应商；缺了它宿主拿不到授权链接，页面只显示「获取授权链接
-// 失败」。这条约束曾经只靠各供应商自己记得设置，导致 codearts / trae /
-// traesolo 三个供应商长期无法添加账号——而插件侧 LoginStart 明明成功返回了
+// 失败」。这条约束曾经只靠各供应商自己记得设置，导致 codearts / trae 等
+// 供应商长期无法添加账号——而插件侧 LoginStart 明明成功返回了
 // URL，日志上只有一句 "started login"，排查方向被完全带偏。
 //
 // 现在标识由根层（auth_login.go 的分发点）统一注入，本用例即该契约的守卫。
@@ -89,9 +89,8 @@ func TestAuthParseVendorOwnershipDiscrimination(t *testing.T) {
 		// 既有供应商：仍按各自约定认领。
 		{"workbuddy nested", "workbuddycn-u1.json", "", `{"account":{"uid":"u1"},"auth":{"accessToken":"at","realm":"cn"}}`, true},
 		{"qoder pt token", "qodercn-u1.json", "", `{"token":"pt-abc"}`, true},
-		// 新增供应商：ZCode, TraeSOLO, Trae国内版/国际版, CodeArts, MiniMax Code
+		// 新增供应商：ZCode, Trae 国内版/国际版, CodeArts, MiniMax Code
 		{"zcode filename", "zcode-key1.json", "", `{"api_key":"abc.123"}`, true},
-		{"traesolo filename", "traesolo-user1.json", "", `{"accessToken":"at_123","refreshToken":"rt_456"}`, true},
 		{"traecn filename", "traecn-user1.json", "", `{"accessToken":"at_123"}`, true},
 		{"traeglobal filename", "traeglobal-user1.json", "", `{"accessToken":"at_123","region":"global"}`, true},
 		{"codearts filename", "codearts-user1.json", "", `{"access_key_id":"ak","secret_access_key":"sk"}`, true},

@@ -137,9 +137,7 @@ func traeLiveCredential(t *testing.T) (*trae.Credential, trae.Config) {
 	}
 
 	cfg := trae.ConfigFor(trae.RegionCN)
-	if strings.Contains(strings.ToLower(path), "traesolo") {
-		cfg = trae.SoloConfig()
-	} else if strings.Contains(strings.ToLower(path), "traeglobal") {
+	if strings.Contains(strings.ToLower(path), "traeglobal") {
 		cfg = trae.ConfigFor(trae.RegionGlobal)
 	}
 	cred, errParse := trae.ParseCredentialFor(raw, cfg)

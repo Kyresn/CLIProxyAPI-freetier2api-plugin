@@ -11,7 +11,7 @@ import (
 	"freetier2api-plugin/internal/core"
 )
 
-// TestVendorRegistryCompatibility 锁定 16 个供应商实例的对外身份与顺序。
+// TestVendorRegistryCompatibility 锁定 15 个供应商实例的对外身份与顺序。
 func TestVendorRegistryCompatibility(t *testing.T) {
 	installFakeHost(t)
 	setupTestPlugin(t)
@@ -32,7 +32,6 @@ func TestVendorRegistryCompatibility(t *testing.T) {
 		{"raccoon", "小浣熊", ""},
 		{"traecn", "Trae 国内版", "cn"},
 		{"traeglobal", "Trae 国际版", "global"},
-		{"traesolo", "TRAE SOLO", "cn"},
 		{"workbuddycn", "WorkBuddy 国内版", "cn"},
 		{"workbuddyglobal", "WorkBuddy 国际版", "global"},
 		{"zcode", "ZCode", "global"},
@@ -86,7 +85,6 @@ func TestVendorCapabilities(t *testing.T) {
 		"raccoon":           {credits: true, login: true, refresh: true, quota: true, checkin: true, models: true, merge: true, configure: true},
 		"traecn":            {credits: true, login: true, refresh: true, quota: true, checkin: true, merge: true, configure: true},
 		"traeglobal":        {credits: true, login: true, refresh: true, quota: true, checkin: true, merge: true, configure: true},
-		"traesolo":          {credits: true, login: true, refresh: true, quota: true, checkin: true, merge: true, configure: true},
 		"workbuddycn":       {credits: true, login: true, refresh: true, quota: true, checkin: true, tasks: true, models: true, merge: true, configure: true, console: true},
 		"workbuddyglobal":   {credits: true, login: true, refresh: true, quota: true, checkin: true, tasks: true, models: true, merge: true, configure: true, console: true},
 		"zcode":             {login: true, refresh: true, quota: true, merge: true, configure: true, authMode: "oauth"},

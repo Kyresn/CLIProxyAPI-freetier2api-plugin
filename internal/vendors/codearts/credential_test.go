@@ -32,7 +32,7 @@ func TestLooksLikeCredential(t *testing.T) {
 		},
 		{
 			name:     "foreign vendor",
-			raw:      map[string]any{"vendor": "traesolo"},
+			raw:      map[string]any{"vendor": "traecn"},
 			fileName: "codearts-test.json",
 			want:     false,
 		},

@@ -69,7 +69,6 @@ func LoginStart(ctx context.Context, cfg Config, store *SessionStore) (*pluginap
 		SessionID: sessionID,
 		VendorID:  cfg.VendorID,
 		Region:    cfg.Region,
-		IsSolo:    cfg.Solo,
 		MachineID: machineID,
 		DeviceID:  deviceID,
 		TraceID:   traceID,
@@ -127,12 +126,11 @@ func LoginPoll(ctx context.Context, state string, store *SessionStore) (*plugina
 	}
 }
 
-// PendingSession 记录一次进行中的 Trae 或 Trae Solo 登录。
+// PendingSession 记录一次进行中的 Trae 登录。
 type PendingSession struct {
 	SessionID string
-	VendorID  string // trae-cn, trae-global, trae-solo
+	VendorID  string // traecn / traeglobal
 	Region    Region
-	IsSolo    bool
 	MachineID string
 	DeviceID  string
 	TraceID   string
@@ -198,10 +196,6 @@ func (s *SessionStore) owns(sessionID, vendorID string) bool {
 		}
 	case "traeglobal", "trae-global":
 		if strings.HasPrefix(norm, "traeglobal_") || strings.HasPrefix(norm, "trae_global_") {
-			return true
-		}
-	case "traesolo", "trae-solo":
-		if strings.HasPrefix(norm, "traesolo_") || strings.HasPrefix(norm, "trae_solo_") {
 			return true
 		}
 	}
@@ -457,7 +451,7 @@ func (s *SessionStore) handleAuthorizeCallback(w http.ResponseWriter, r *http.Re
 // HTTP 回调与控制台「粘贴回调链接」共用这一段——两条路径只差「怎么拿到回调
 // 链接」，完成逻辑必须一致，否则同一次登录会因为入口不同产出不同凭证。
 func (s *SessionStore) completeLogin(ctx context.Context, matched *PendingSession, info *CallbackInfo) (*pluginapi.AuthData, error) {
-	// 执行 Token 换取：host/clientID 一律按实例 profile 取（国内版与 SOLO 同为
+	// 执行 Token 换取：host/clientID 一律按实例 profile 取（国内版为
 	// api.trae.cn + en1oxy7wnw8j9n，国际版为 growsg-normal.trae.ai + ono9krqynydwx5）。
 	cfg, okConfig := ConfigForVendor(matched.VendorID)
 	if !okConfig {
@@ -495,9 +489,7 @@ func (s *SessionStore) completeLogin(ctx context.Context, matched *PendingSessio
 	}
 
 	label := "Trae-" + nickname
-	if matched.IsSolo {
-		label = "TraeSolo-" + nickname
-	} else if matched.Region == RegionGlobal {
+	if matched.Region == RegionGlobal {
 		label = "TraeGlobal-" + nickname
 	}
 
@@ -513,9 +505,7 @@ func (s *SessionStore) completeLogin(ctx context.Context, matched *PendingSessio
 		"machine_id":    matched.MachineID,
 		"device_id":     matched.DeviceID,
 		"label":         label,
-	}
-	if !matched.IsSolo {
-		storageMap["region"] = string(matched.Region)
+		"region":        string(matched.Region),
 	}
 
 	rawStorage, errJSON := json.MarshalIndent(storageMap, "", "  ")
@@ -603,7 +593,7 @@ func (s *SessionStore) SubmitCallback(ctx context.Context, state, rawURL string)
 //
 // 协议（已联调验证）：POST {host}/cloudide/api/v3/trae/oauth/ExchangeToken，
 // PascalCase 载荷，响应取 Result.Token / Result.RefreshToken / Result.TokenExpireAt。
-// host/clientID 由调用方按实例 profile 给出（国内版与 SOLO 同为 api.trae.cn +
+// host/clientID 由调用方按实例 profile 给出（国内版为 api.trae.cn +
 // en1oxy7wnw8j9n，国际版为 growsg-normal.trae.ai + ono9krqynydwx5）。
 func exchangeTraeToken(ctx context.Context, authHost, clientID, userID, refreshToken string) (string, string, int64, error) {
 	payload := map[string]string{
@@ -775,7 +765,8 @@ func MergeStorageJSON(original []byte, updated *Credential) ([]byte, error) {
 		if updated.ExpiresAt > 0 {
 			m["expires_at"] = updated.ExpiresAt
 		}
-		// TRAE SOLO 的凭证可能是嵌套 {auth:{...}} 结构，两处都要写。
+		// 解析允许嵌套的 {auth:{...}} 结构（见 parseCredential），写回必须对称，
+		// 否则嵌套凭证续期后只在顶层更新，下次解析仍读到旧 token。
 		if authObj, ok := m["auth"].(map[string]any); ok {
 			authObj["accessToken"] = updated.AccessToken
 			if updated.RefreshToken != "" {
