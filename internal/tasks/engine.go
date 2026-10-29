@@ -276,22 +276,31 @@ func (s *Service) runScheduledFamily(ctx context.Context, kind string) {
 			count++
 			return nil
 		}
-		runner, okRunner := core.As[core.ScheduledRunner](account.vendor)
-		if !okRunner {
-			return nil
-		}
-		message, errRun := runner.RunScheduled(ctx, account.credential, kind)
-		if errRun != nil {
-			logger.Error("%s %s: %v", kind, account.label(), errRun)
-			return nil
-		}
-		if message != "" {
+		if message := s.runScheduledForAccount(ctx, account, kind); message != "" {
 			logger.Info("%s %s: %s", kind, account.label(), message)
 			count++
 		}
 		return nil
 	})
 	logger.Info("%s: finished for %d account(s)", kind, count)
+}
+
+// runScheduledForAccount 让账号所属供应商执行一个定时任务族，返回可读结果。
+//
+// 排程是全局的（task_schedules 不区分供应商与账号），执行前必须按供应商声明的
+// TaskSpecs 过滤：未声明的族对它没有实现，静默跳过即可，不能落 ERROR——否则
+// 每到一个排程点就刷一条「unknown scheduled task kind」，把真实错误淹没（issue #58）。
+func (s *Service) runScheduledForAccount(ctx context.Context, account *accountContext, kind string) string {
+	runner, okRunner := core.As[core.ScheduledRunner](account.vendor)
+	if !okRunner || !core.SupportsScheduledKind(account.vendor, kind) {
+		return ""
+	}
+	message, errRun := runner.RunScheduled(ctx, account.credential, kind)
+	if errRun != nil {
+		logger.Error("%s %s: %v", kind, account.label(), errRun)
+		return ""
+	}
+	return message
 }
 
 const (

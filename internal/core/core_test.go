@@ -332,6 +332,39 @@ func TestToPluginError(t *testing.T) {
 }
 
 // quotaVendor 只实现额度能力，用于验证能力断言。
+// taskCatalogVendor 只实现任务目录能力，用来验证调度器按供应商声明的任务族过滤。
+type taskCatalogVendor struct {
+	fakeVendor
+	specs []TaskSpec
+}
+
+func (v *taskCatalogVendor) TaskSpecs() []TaskSpec { return v.specs }
+
+// TestSupportsScheduledKind 验证调度器按供应商能力过滤全局排程。
+//
+// issue #58：task_schedules 是全局的，dailybonus 只对国际版注册了实现；
+// 调度器仍对国内账号执行它，于是每 4 小时一条 ERROR。过滤依据必须是各家
+// 自己声明的 TaskSpecs，而不是「有没有实现 ScheduledRunner」。
+func TestSupportsScheduledKind(t *testing.T) {
+	vendor := &taskCatalogVendor{
+		fakeVendor: fakeVendor{Meta: Meta{VendorID: "cattest"}},
+		specs:      []TaskSpec{{Kind: "travel"}, {Kind: "activity"}},
+	}
+	if !SupportsScheduledKind(vendor, "travel") {
+		t.Fatal("已声明的任务族应判定为支持")
+	}
+	if !SupportsScheduledKind(vendor, " activity ") {
+		t.Fatal("kind 两侧空白应归一")
+	}
+	if SupportsScheduledKind(vendor, "dailybonus") {
+		t.Fatal("未声明的任务族应判定为不支持")
+	}
+	withoutCatalog := &fakeVendor{Meta: Meta{VendorID: "nocate"}}
+	if SupportsScheduledKind(withoutCatalog, "travel") {
+		t.Fatal("没有任务目录的供应商一律判定为不支持")
+	}
+}
+
 type quotaVendor struct{ fakeVendor }
 
 func (v *quotaVendor) Quota(context.Context, *Credential) (*pluginapi.QuotaFetchResponse, error) {
