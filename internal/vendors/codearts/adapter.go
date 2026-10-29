@@ -78,9 +78,18 @@ func (v *adapter) Match(fileName, provider string, raw map[string]any) bool {
 
 // ---- 模型 ----
 
-// StaticModels 返回模型清单（无需凭证）。
+// StaticModels 返回模型清单。
+//
+// 福利通道的模型是按凭证下发的（FetchBenefitModels 需要 AK/SK 签名），所以这里
+// 和 ModelsForAuth 一样借一个可用凭证探测：两条路径同源，控制台缓存才不会出现
+// 「刷新模型目录后少 5 个模型」（issue #58）。没有可用凭证时退回内置目录——
+// model.static 可能先于凭证加载被调用，报错会让宿主把整家供应商当成探测失败。
 func (v *adapter) StaticModels(ctx context.Context) ([]pluginapi.ModelInfo, error) {
-	models, errModels := FetchModels(ctx, nil)
+	probe, _ := core.ProbeNativeCredential(v.Env, v.ID(), func(c *core.Credential) (*Credential, bool) {
+		native, okNative := c.Native.(*Credential)
+		return native, okNative
+	})
+	models, errModels := FetchModels(ctx, probe)
 	if errModels != nil {
 		return nil, errModels
 	}
