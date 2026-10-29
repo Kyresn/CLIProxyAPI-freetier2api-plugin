@@ -10,7 +10,6 @@ import (
 
 	"freetier2api-plugin/cpasdk/pluginapi"
 	"freetier2api-plugin/internal/core"
-	"freetier2api-plugin/internal/hostbridge"
 )
 
 // adapter 是 core.Vendor 在 CodeArts 上的实现。
@@ -237,7 +236,7 @@ func (v *adapter) ExecuteStream(ctx context.Context, cred *core.Credential, req 
 		return core.ToPluginError(errStream)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return hostbridge.ForwardRawSSE(resp.Body, sink.Emit)
+	return ForwardStream(resp.Body, sink.Emit)
 }
 
 // ---- 额度与签到 ----

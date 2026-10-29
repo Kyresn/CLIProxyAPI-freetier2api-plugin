@@ -1,8 +1,12 @@
 package codearts
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"freetier2api-plugin/internal/core"
 )
 
 // TestClampMaxTokens 锁定请求侧的输出上限夹取。
@@ -57,5 +61,65 @@ func TestClampMaxTokensPassesThroughUntouched(t *testing.T) {
 		if got := string((&adapter{}).prepareRequestBody([]byte(body))); got != body {
 			t.Fatalf("body 应原样返回，实际 %q", got)
 		}
+	}
+}
+
+// TestForwardStreamConvertsBusinessErrorFrame 验证 data: 帧里的业务错误被翻成
+// OpenAI 错误帧，而不是原样交给宿主（宿主认不出就会被「流提前结束」覆盖）。
+func TestForwardStreamConvertsBusinessErrorFrame(t *testing.T) {
+	body := "data: " + streamErrorFrame + "\n\ndata: [DONE]\n\n"
+	var emitted []string
+	errForward := ForwardStream(strings.NewReader(body), func(payload []byte) error {
+		emitted = append(emitted, string(payload))
+		return nil
+	})
+	if errForward != nil {
+		t.Fatalf("ForwardStream: %v", errForward)
+	}
+	if len(emitted) != 1 {
+		t.Fatalf("只应下发一帧转换后的错误，实际 %d 帧: %v", len(emitted), emitted)
+	}
+	for _, want := range []string{`"upstream_error"`, "benefit not found", "req-fixture-0001"} {
+		if !strings.Contains(emitted[0], want) {
+			t.Fatalf("错误帧缺少 %q: %s", want, emitted[0])
+		}
+	}
+	if strings.Contains(emitted[0], "error_code") {
+		t.Fatalf("下发帧必须已是 OpenAI 形态: %s", emitted[0])
+	}
+}
+
+// TestForwardStreamPassesNormalFrames 验证正常帧与注释行原样透传。
+func TestForwardStreamPassesNormalFrames(t *testing.T) {
+	body := ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"
+	var emitted []string
+	if errForward := ForwardStream(strings.NewReader(body), func(payload []byte) error {
+		emitted = append(emitted, string(payload))
+		return nil
+	}); errForward != nil {
+		t.Fatalf("ForwardStream: %v", errForward)
+	}
+	if len(emitted) != 2 || emitted[0] != ": keep-alive" || !strings.Contains(emitted[1], `"content":"hi"`) {
+		t.Fatalf("正常帧应原样透传，实际 %v", emitted)
+	}
+}
+
+// TestChatRejectsBusinessErrorIn200Body 验证非流式 200 包体里的业务错误被转成
+// 分类错误，而不是原样透传给客户端。
+func TestChatRejectsBusinessErrorIn200Body(t *testing.T) {
+	stubHostWithBody(t, `{"error_code":"4004","error_msg":"benefit not found","result":null}`)
+	_, errChat := Chat(context.Background(), "http://codearts.test", ChatRequest{
+		Credential: &Credential{AccessKeyID: "ak", SecretAccessKey: "sk"},
+		Body:       []byte(`{"model":"glm-5.3","messages":[]}`),
+	})
+	if errChat == nil {
+		t.Fatal("200 包体里的业务错误必须报错")
+	}
+	failure, okFailure := errChat.(*core.Failure)
+	if !okFailure {
+		t.Fatalf("应返回 *core.Failure，实际 %T: %v", errChat, errChat)
+	}
+	if !strings.Contains(failure.Msg, "benefit not found") || !strings.Contains(failure.Msg, benefitHint) {
+		t.Fatalf("message 应保留上游原文并给出可操作提示: %s", failure.Msg)
 	}
 }

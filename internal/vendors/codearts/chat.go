@@ -46,6 +46,11 @@ func Chat(ctx context.Context, baseURL string, req ChatRequest) ([]byte, error) 
 	if resp.StatusCode >= 400 {
 		return nil, Classify(resp.StatusCode, string(body))
 	}
+	// HTTP 200 也可能是业务错误信封（{"error_code":"4004","error_msg":...}）：
+	// 原样透传客户端只会拿到一个不符合 OpenAI 契约的响应体。
+	if failure, okFailure := ErrorFromPayload(body); okFailure {
+		return nil, failure
+	}
 
 	return body, nil
 }
@@ -64,6 +69,26 @@ func ChatStream(ctx context.Context, baseURL string, req ChatRequest) (*http.Res
 	}
 
 	return resp, nil
+}
+
+// ForwardStream 逐帧转发上游 SSE，并把业务错误帧翻成 OpenAI 错误帧。
+//
+// 宿主只把 choices 缺失且带 error 对象的帧当成终止错误；上游却在 HTTP 200 的
+// `data:` 帧里直接回 {"error_code":"InferHub.4004.200","error_msg":"benefit not found"}。
+// 原样转发时宿主认不出它，收尾时用「流提前结束」覆盖真实原因（issue #58）。
+// 帧遍历本身复用 hostbridge.ForwardRawSSE，这里只做载荷改写。
+func ForwardStream(body io.Reader, emit func([]byte) error) error {
+	return hostbridge.ForwardRawSSE(body, func(payload []byte) error {
+		failure, okFailure := ErrorFromPayload(payload)
+		if !okFailure {
+			return emit(payload)
+		}
+		frame, errFrame := OpenAIErrorFrame(failure)
+		if errFrame != nil {
+			return errFrame
+		}
+		return emit(frame)
+	})
 }
 
 func doCodeArtsRequest(ctx context.Context, baseURL string, req ChatRequest) (*http.Response, error) {
