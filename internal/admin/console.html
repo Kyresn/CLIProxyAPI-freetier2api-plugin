@@ -265,6 +265,49 @@ details.fold > summary::before { content: "\25B8"; font-size: 22px; line-height:
 details.fold[open] > summary::before { content: "\25BE"; }
 details.fold > summary:hover { color: var(--accent); }
 details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+
+/* 响应式：平板（≤900px）。桌面端（>900px）完全不受影响，以下只在窄屏生效。 */
+@media (max-width: 900px) {
+  header { margin: 10px 12px 0; padding: 13px 16px; }
+  header h1 { font-size: 17.5px; }
+  main { padding: 12px 12px 36px; }
+  .card { padding: 14px 15px; }
+  th, td { padding: 7px 8px; }
+  /* 账号表与扫描结果表在窄屏改为横向滚动，避免 8 列 nowrap 撑破视口。
+     代价：这两张表在该断点下不再吸顶（overflow-x 会让 overflow-y 计算为 auto），
+     窄屏本来也没有吸顶价值。 */
+  #accounts, #scans .card { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  #models table { min-width: 820px; }
+  .modal-box { padding: 16px; }
+}
+
+/* 响应式：手机（≤640px）。 */
+@media (max-width: 640px) {
+  header { margin: 8px 8px 0; padding: 12px 14px; }
+  header h1 { font-size: 16px; }
+  header .sub { font-size: 11.5px; }
+  main { padding: 10px 8px 30px; }
+  .card { padding: 12px; }
+  .card h2 { font-size: 13.5px; margin-bottom: 10px; }
+  .disclaimer { padding: 9px 12px; font-size: 12px; }
+  th, td { padding: 6.5px 7px; font-size: 12px; }
+  thead th { font-size: 11px; }
+  /* 输入框独占一行。两处 !important 都是压 HTML 内联样式的：
+     inline 的 `flex:1` 会覆盖外部 flex-basis，inline 的 `min-width:320px`
+     会让 390px 屏横向溢出。不压这两条，筛选框会被压成一条缝。 */
+  .row > input[type=text], .row > input[type=password], .row > input[type=number] {
+    flex: 1 1 100% !important; width: 100%; min-width: 0 !important;
+  }
+  /* 按钮按内容均分，避免多个按钮各占一行显得松散。 */
+  .row > button.act { flex: 1 1 auto; min-width: 0; }
+  .modal { padding: 12px; }
+  .modal-box { padding: 14px; }
+  .logbox { max-height: 320px; padding: 10px 11px; }
+  .bar { width: 56px; }
+  #models table { min-width: 720px; }
+  #taskSchedule input { max-width: 100%; }
+}
+
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 </head>
