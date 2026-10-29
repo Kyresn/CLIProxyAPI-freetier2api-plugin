@@ -13,6 +13,7 @@ package minimaxcode
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -26,6 +27,9 @@ var (
 		"token invalid", "invalid token", "token expired", "token is expired",
 		"unauthorized", "unauthenticated", "login required", "not logged in",
 		"凭证无效", "凭证已过期", "登录已过期", "请重新登录", "未登录",
+		// OAuth 刷新失败的标准错误码：refresh_token 被撤销或轮换失效时，
+		// 上游回 400 invalid_grant，按状态码只能归到「客户端错误」。
+		"invalid_grant", "invalid refresh token", "invalid_refresh_token", "token revoked",
 	}
 	creditMarkers = []string{
 		"insufficient balance", "insufficient_balance", "insufficient credit",
@@ -98,4 +102,16 @@ func upstreamCode(body string) string {
 		return trimmed[:digits]
 	}
 	return ""
+}
+
+// isCredentialFailure 报告错误是否属于「凭证不可用」类。
+//
+// 登录落盘前用它把两类失败分开：凭证本身不可用（不能写盘，直接报错让用户
+// 重来）与网络抖动（token 已经拿到，不影响落盘）。
+func isCredentialFailure(err error) bool {
+	var failure *core.Failure
+	if errors.As(err, &failure) {
+		return failure.Kind == core.FailureKindCredential
+	}
+	return false
 }

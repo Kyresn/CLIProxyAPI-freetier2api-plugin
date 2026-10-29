@@ -29,3 +29,27 @@ func TestConsolePageHidesMissingTotal(t *testing.T) {
 		t.Fatal("console page must not render remain / total unconditionally")
 	}
 }
+
+// TestConsolePageShowsQuotaFailureReason 锁定额度失败原因的展示出口。
+//
+// 后端 runQuotaBatch 把失败原因写进缓存的 quota.message 已久，但页面在
+// !quota.ok 时只渲染「-- / --」，用户拿到的信息与「上游没有额度接口」没有
+// 区别，无法判断该重新授权还是稍后再查。横幅也只报一个失败计数。
+func TestConsolePageShowsQuotaFailureReason(t *testing.T) {
+	page := Page("/plugins/freetier2api")
+
+	for _, literal := range []string{
+		`var reason = quota.message || "额度查询失败";`,
+		"remainCell.title = reason;",
+		"function shortReason(text)",
+		// 横幅逐账号明细：前 5 条 + 折叠剩余。
+		"failures.slice(0, 5).map(function (r)",
+		`"…等 " + failures.length + " 个账号失败"`,
+		// 明细靠多行排布，缺了 white-space 会被挤成一行。
+		"white-space: pre-line;",
+	} {
+		if !strings.Contains(page, literal) {
+			t.Fatalf("console page is missing quota failure rendering (%s)", literal)
+		}
+	}
+}

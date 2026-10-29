@@ -568,6 +568,11 @@ func balanceFixture() map[string]any {
 	}
 }
 
+// balanceRowsFixture 取实测 fixture 里的额度桶条目（balanceQuota 只吃条目）。
+func balanceRowsFixture() []map[string]any {
+	return objectRows(dataMap(balanceFixture())["balances"])
+}
+
 // metricValue 取摘要里指定 key 的指标值。
 func metricValue(metrics []pluginapi.QuotaMetric, key string) (float64, bool) {
 	for _, metric := range metrics {
@@ -581,7 +586,7 @@ func metricValue(metrics []pluginapi.QuotaMetric, key string) (float64, bool) {
 // TestBalanceQuotaExposeTotalsFamily 验证 default 族汇总：账号表的
 // 「剩余 / 总额」列靠它们算比例，逐模型指标保持独立键。
 func TestBalanceQuotaExposeTotalsFamily(t *testing.T) {
-	metrics, groups := balanceQuota(balanceFixture())
+	metrics, groups := balanceQuota(balanceRowsFixture())
 	for key, want := range map[string]float64{
 		"remaining": 130604486 + 184361183,
 		"total":     500000000,
@@ -608,14 +613,14 @@ func TestBalanceQuotaExposeTotalsFamily(t *testing.T) {
 // TestBalanceQuotaEdgeCases 覆盖边界：空 balances、total=0、越界分数 clamp、
 // 全部条目解析失败不给假汇总。
 func TestBalanceQuotaEdgeCases(t *testing.T) {
-	if m, g := balanceQuota(map[string]any{}); m != nil || g != nil {
+	if m, g := balanceQuota(nil); m != nil || g != nil {
 		t.Fatalf("empty balances must yield nil/nil, got %+v %+v", m, g)
 	}
 
 	// total=0：分数按「仍有余额 = 满额」展示，remaining 仍计入汇总。
-	metrics, groups := balanceQuota(map[string]any{"data": map[string]any{"balances": []any{
-		map[string]any{"show_name": "X", "total_units": float64(0), "remaining_units": float64(5)},
-	}}})
+	metrics, groups := balanceQuota([]map[string]any{
+		{"show_name": "X", "total_units": float64(0), "remaining_units": float64(5)},
+	})
 	if got, ok := metricValue(metrics, "remaining"); !ok || got != 5 {
 		t.Fatalf("total=0 metrics = %+v", metrics)
 	}
@@ -624,17 +629,17 @@ func TestBalanceQuotaEdgeCases(t *testing.T) {
 	}
 
 	// remaining 超过 total：clamp 到 1。
-	_, groups = balanceQuota(map[string]any{"data": map[string]any{"balances": []any{
-		map[string]any{"show_name": "X", "total_units": float64(10), "remaining_units": float64(50)},
-	}}})
+	_, groups = balanceQuota([]map[string]any{
+		{"show_name": "X", "total_units": float64(10), "remaining_units": float64(50)},
+	})
 	if groups[0].Buckets[0].RemainingFraction != 1 {
 		t.Fatalf("clamp fraction = %v", groups[0].Buckets[0].RemainingFraction)
 	}
 
 	// 条目全部缺 show_name：不给「剩余 0」的假汇总。
-	metrics, _ = balanceQuota(map[string]any{"data": map[string]any{"balances": []any{
-		map[string]any{"total_units": float64(10)},
-	}}})
+	metrics, _ = balanceQuota([]map[string]any{
+		{"total_units": float64(10)},
+	})
 	if metrics != nil {
 		t.Fatalf("unparsable entries must yield nil metrics, got %+v", metrics)
 	}
@@ -675,5 +680,115 @@ func TestActivePlansSharedSemantics(t *testing.T) {
 	held := heldPlanIDs(plans, serverSeconds(balanceFixture()))
 	if len(held) != 2 || held["zcode-expired"] {
 		t.Fatalf("held = %+v", held)
+	}
+}
+
+// TestSubscriptionPlanSelection 验证订阅名选择：优先取与额度桶同到期的套餐，
+// 没有关联证据时退回最早的生效套餐，一个生效套餐都没有时保留默认名。
+//
+// 数组顺序不可信：并存「促销礼包 + 基础套餐」时，第一个 active 未必是账号
+// 正在消耗的那份，展示错套餐名会让用户按错误的额度预期用模型。
+func TestSubscriptionPlanSelection(t *testing.T) {
+	const serverTime = 1792900000
+	matched := []map[string]any{
+		{"plan_id": "promo", "name": "Promo", "status": "active", "ends_at": float64(1800000000)},
+		{"plan_id": "in-use", "name": "In Use", "status": "active", "ends_at": float64(1792976400)},
+		{"plan_id": "pending", "name": "Pending", "status": "pending", "ends_at": float64(1792976400)},
+	}
+	ended := []map[string]any{
+		{"plan_id": "ended", "name": "Ended", "status": "active", "ends_at": float64(1792800000)},
+		{"plan_id": "running", "name": "Running", "status": "", "ends_at": float64(1800000000)},
+	}
+	tests := []struct {
+		name     string
+		plans    []map[string]any
+		balances []map[string]any
+		wantPlan string
+		wantTier string
+	}{
+		{
+			name:  "按桶到期时刻命中",
+			plans: matched,
+			// 两个桶同属 1024 礼包；promo 到期更晚但没有任何桶指向它。
+			balances: []map[string]any{
+				{"show_name": "GLM-5.3", "expires_at": float64(1792976400)},
+				{"show_name": "GLM-5.3-Flash", "expires_at": float64(1792976400)},
+			},
+			wantPlan: "In Use", wantTier: "in-use",
+		},
+		{
+			name:     "桶到期对不上时退回第一个生效套餐",
+			plans:    ended,
+			balances: []map[string]any{{"show_name": "X", "expires_at": float64(9999)}},
+			wantPlan: "Running", wantTier: "running",
+		},
+		{
+			name:     "没有额度桶时退回第一个生效套餐",
+			plans:    ended,
+			wantPlan: "Running", wantTier: "running",
+		},
+		{
+			name: "没有生效套餐时保留默认订阅名",
+			plans: []map[string]any{
+				{"plan_id": "gone", "name": "Gone", "status": "expired", "ends_at": float64(1000)},
+			},
+			balances: []map[string]any{{"show_name": "X"}},
+			wantPlan: "ZCode Coding Plan", wantTier: "Standard",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := &pluginapi.QuotaFetchResponse{Subscription: &pluginapi.QuotaSubscription{
+				Plan: "ZCode Coding Plan", TierName: "Standard", TierID: "zcode",
+			}}
+			applySubscription(planSnapshot{
+				plans: test.plans, balances: test.balances, serverTime: serverTime,
+			}, response)
+			if response.Subscription.Plan != test.wantPlan || response.Subscription.TierName != test.wantTier {
+				t.Fatalf("subscription = %q / %q, want %q / %q",
+					response.Subscription.Plan, response.Subscription.TierName, test.wantPlan, test.wantTier)
+			}
+		})
+	}
+}
+
+// TestBillingEnvelopeComplete 区分「上游没给 balances 数组（改版/截断）」与
+// 「账号确实没有额度桶（空数组）」。前者必须报错，后者是合法答案。
+func TestBillingEnvelopeComplete(t *testing.T) {
+	tests := []struct {
+		name string
+		body map[string]any
+		want bool
+	}{
+		{"真空账号：数组齐全但为空", map[string]any{"data": map[string]any{
+			"plans": []any{}, "balances": []any{},
+		}}, true},
+		{"缺 balances", map[string]any{"data": map[string]any{"plans": []any{}}}, false},
+		{"balances 不是数组", map[string]any{"data": map[string]any{"balances": "oops"}}, false},
+		{"缺 data", map[string]any{"code": codeSuccess}, false},
+		{"空响应", nil, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := billingEnvelopeComplete(test.body); got != test.want {
+				t.Fatalf("billingEnvelopeComplete = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+// TestActivePlansNormalizesMillisecondTimestamps 验证 13 位毫秒时间戳不会把
+// 生效套餐整批判成过期：上游混用秒/毫秒时，比较前必须先归一。
+func TestActivePlansNormalizesMillisecondTimestamps(t *testing.T) {
+	plans := []map[string]any{
+		{"plan_id": "ms", "status": "active", "ends_at": float64(1792976400000)},
+		{"plan_id": "s", "status": "active", "ends_at": float64(1800000000)},
+	}
+	if active := activePlans(plans, 1792900000); len(active) != 2 {
+		t.Fatalf("active plans = %+v, want both entries", active)
+	}
+	body := map[string]any{"data": map[string]any{"server_time": float64(1792900000000)}}
+	if got := serverSeconds(body); got != 1792900000 {
+		t.Fatalf("serverSeconds = %d, want 1792900000", got)
 	}
 }

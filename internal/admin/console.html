@@ -226,7 +226,7 @@ input.aliasinput:focus { outline: none; border-color: var(--accent); box-shadow:
 
 .banner { padding: 10px 14px; border-radius: 10px; margin-bottom: 12px; font-size: 13px;
           display: none; transition: opacity .2s ease; border: 1px solid transparent;
-          border-left-width: 3px; backdrop-filter: blur(6px); }
+          border-left-width: 3px; backdrop-filter: blur(6px); white-space: pre-line; }
 .banner.show { display: block; }
 .banner.err  { background: var(--err-soft);  border-left: 3px solid var(--err);  color: var(--err); }
 .banner.ok   { background: var(--ok-soft);   border-left: 3px solid var(--ok);   color: var(--ok); }
@@ -702,6 +702,12 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 
   function pill(text, kind) {
     return el("span", text, "pill" + (kind ? " " + kind : ""));
+  }
+
+  // shortReason 把上游错误正文压成一行：额度格只有一列宽，完整原因放 title。
+  function shortReason(text) {
+    var flat = String(text || "").replace(/\s+/g, " ").trim();
+    return flat.length > 42 ? flat.slice(0, 42) + "…" : flat;
   }
 
   // vendorChipClass 把供应商标识哈希到 v0..v5，交给 CSS 上彩色芯片底色。
@@ -1194,8 +1200,16 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
           row.appendChild(el("td", "--", "muted"));
         }
       } else if (!quota.ok) {
-        row.appendChild(el("td", "-- / --", "muted"));
-        row.appendChild(el("td", "--", "muted"));
+        // 失败原因必须看得见：只渲染「--」时用户分不清是凭证失效、上游抖动
+        // 还是本来就查不到，也就不知道该重新授权还是稍后再查。后端已经把
+        // 原因写进缓存的 message，这里只负责展示。
+        var reason = quota.message || "额度查询失败";
+        var remainCell = el("td", "-- / --", "muted");
+        remainCell.title = reason;
+        row.appendChild(remainCell);
+        var reasonCell = el("td", shortReason(reason), "muted");
+        reasonCell.title = reason;
+        row.appendChild(reasonCell);
       } else if (quota.unlimited) {
         row.appendChild(el("td", "无限"));
         row.appendChild(el("td", "—", "muted"));
@@ -1379,10 +1393,24 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     return api("POST", "/quotas", { account_ids: targets || [] }).then(function (data) {
       if (!data) return;
       var results = (data && data.results) || [];
-      var failed = results.filter(function (r) { return !r.ok; }).length;
+      var failures = results.filter(function (r) { return !r.ok; });
       if (!quiet) {
-        banner(failed ? "warn" : "ok",
-          "额度查询完成：" + results.length + " 个账号" + (failed ? "，" + failed + " 个失败" : ""), 5000);
+        if (!failures.length) {
+          banner("ok", "额度查询完成：" + results.length + " 个账号", 5000);
+        } else {
+          // 只给「N 个失败」时用户不知道是哪个账号、什么原因，只能逐个试；
+          // 逐条列出前 5 个，其余折叠成计数，避免横幅无限长。
+          var detail = failures.slice(0, 5).map(function (r) {
+            var who = r.label || r.name || r.auth_id || "未知账号";
+            var vendor = r.vendor_name || r.vendor_id || "未知供应商";
+            return vendor + " / " + who + "：" + (r.message || "未知错误");
+          });
+          if (failures.length > detail.length) {
+            detail.push("…等 " + failures.length + " 个账号失败");
+          }
+          banner("warn", "额度查询完成：" + results.length + " 个账号，" +
+            failures.length + " 个失败\n" + detail.join("\n"), 12000);
+        }
       }
       return loadStatus(true);
     }).catch(function (err) {

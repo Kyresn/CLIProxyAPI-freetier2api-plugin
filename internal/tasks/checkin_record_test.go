@@ -26,6 +26,8 @@ type fakeDeps struct {
 	cfg   Config
 	// mutations 统计落盘次数：一次签到只应产生一次状态变更。
 	mutations int
+	// refreshSaves 统计凭证写回次数：并发续期只应写回一次。
+	refreshSaves int
 }
 
 func (f *fakeDeps) Registry() *core.Registry { return nil }
@@ -43,6 +45,7 @@ func (f *fakeDeps) SaveRefreshedCredential(
 	ctx context.Context, callbackID string, vendor core.Vendor,
 	entry core.HostAuth, original []byte, updated *core.Credential, filePath string,
 ) {
+	f.refreshSaves++
 }
 
 // newFakeDeps 构造一个带好 map 的最小 Deps。

@@ -191,25 +191,51 @@ func (v *adapter) fetchQuota(ctx context.Context, cred *Credential) (*pluginapi.
 //
 // 数据来自套餐快照里已经拿到的 billing/balance，不额外发请求。
 func applySubscription(snapshot planSnapshot, response *pluginapi.QuotaFetchResponse) {
-	for _, plan := range snapshot.plans {
-		status := strings.ToLower(strings.TrimSpace(core.RawStringField(plan, "status")))
-		if status != "" && status != "active" {
-			continue
-		}
-		name := core.RawStringField(plan, "name")
-		if name == "" {
-			continue
-		}
-		response.Subscription.Plan = name
-		response.Subscription.TierName = core.FirstNonEmpty(
-			normalizePlanID(core.FirstNonEmpty(
-				core.RawStringField(plan, "plan_id"),
-				core.RawStringField(plan, "planId"),
-			)),
-			"zcode",
-		)
+	plan := subscriptionPlan(snapshot.plans, snapshot.balances, snapshot.serverTime)
+	if plan == nil {
 		return
 	}
+	name := core.RawStringField(plan, "name")
+	if name == "" {
+		return
+	}
+	response.Subscription.Plan = name
+	response.Subscription.TierName = core.FirstNonEmpty(
+		normalizePlanID(core.FirstNonEmpty(
+			core.RawStringField(plan, "plan_id"),
+			core.RawStringField(plan, "planId"),
+		)),
+		"zcode",
+	)
+}
+
+// subscriptionPlan 选出与该账号额度桶关联最紧的生效套餐。
+//
+// 关联证据只有到期时刻：实测 billing/balance 的 balances 不带 plan_id，
+// 而桶的 expires_at 与套餐的 ends_at 相等即同一份权益（1024 礼包与 Basic
+// 并存时靠它区分，而不是靠数组顺序——数组第一个 active 未必是正在用的那份）。
+// 没有额度桶、或到期对不上时退回最早的生效套餐，与既有展示一致，不凭空造名。
+func subscriptionPlan(plans, balances []map[string]any, serverTime int64) map[string]any {
+	active := activePlans(plans, serverTime)
+	if len(active) == 0 {
+		return nil
+	}
+	if len(balances) == 0 {
+		return active[0]
+	}
+	bucketExpiries := make(map[int64]int, len(balances))
+	for _, bucket := range balances {
+		if expires := core.GetUnixSeconds(bucket, "expires_at"); expires > 0 {
+			bucketExpiries[expires]++
+		}
+	}
+	best, bestHits := active[0], 0
+	for _, plan := range active {
+		if hits := bucketExpiries[core.GetUnixSeconds(plan, "ends_at")]; hits > bestHits {
+			best, bestHits = plan, hits
+		}
+	}
+	return best
 }
 
 // balanceQuota 把 billing/balance 的额度桶一次遍历折成（指标, 窗口组）。
@@ -217,8 +243,7 @@ func applySubscription(snapshot planSnapshot, response *pluginapi.QuotaFetchResp
 // 单遍历同时产出两份：逐桶指标进摘要串，窗口组驱动宿主卡片的进度条；
 // 分两趟各自解析同一响应曾让口径漂移（P1 审查意见）。
 // 同名桶按出现顺序去重计入汇总（上游同模型多条时只计首条，避免重复加总）。
-func balanceQuota(body map[string]any) ([]pluginapi.QuotaMetric, []pluginapi.QuotaGroup) {
-	balances, _ := dataMap(body)["balances"].([]any)
+func balanceQuota(balances []map[string]any) ([]pluginapi.QuotaMetric, []pluginapi.QuotaGroup) {
 	if len(balances) == 0 {
 		return nil, nil
 	}
@@ -228,11 +253,7 @@ func balanceQuota(body map[string]any) ([]pluginapi.QuotaMetric, []pluginapi.Quo
 	parsed := 0
 	metrics := make([]pluginapi.QuotaMetric, 0, len(balances))
 	group := pluginapi.QuotaGroup{DisplayName: "模型额度"}
-	for _, item := range balances {
-		entry, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
+	for _, entry := range balances {
 		name := core.FirstNonEmpty(core.RawStringField(entry, "show_name"), core.RawStringField(entry, "model"))
 		if name == "" {
 			continue
@@ -529,6 +550,10 @@ type planSnapshot struct {
 	held map[string]bool
 	// plans 是 balance 返回的原始套餐条目（订阅名与状态展示用）。
 	plans []map[string]any
+	// balances 是 balance 返回的原始额度桶条目（订阅名按到期时刻与套餐关联）。
+	balances []map[string]any
+	// serverTime 是 balance 响应里的服务端时间（秒，毫秒已归一）；缺失为 0。
+	serverTime int64
 	// metrics 是 balance 换算出的各模型余量。
 	metrics []pluginapi.QuotaMetric
 	// groups 是 balance 换算出的窗口组（宿主卡片渲染进度条与到期时间）。
@@ -571,11 +596,18 @@ func (v *adapter) fetchPlanSnapshot(ctx context.Context, cred *Credential) planS
 		snapshot.errBalance = errBalance
 	case code != codeSuccess:
 		snapshot.errBalance = Classify(0, classifyBillingOutcome(code, body))
+	case !billingEnvelopeComplete(body):
+		// 业务码成功但缺 balances 数组：这是上游改版或响应被截断，不是
+		// 「该账号没有额度」。当作成功会让页面把默认订阅名与空额度当真，
+		// 用户看不出异常；按 transient 上报，下一次查询还有机会恢复。
+		snapshot.errBalance = transientErr("ZCode billing/balance 响应缺少 balances 数组")
 	default:
+		snapshot.serverTime = serverSeconds(body)
 		snapshot.plans = planRows(body)
-		snapshot.held = heldPlanIDs(snapshot.plans, serverSeconds(body))
-		snapshot.metrics, snapshot.groups = balanceQuota(body)
-		if expiry := planExpiryGroup(snapshot.plans, serverSeconds(body)); expiry != nil {
+		snapshot.balances = objectRows(dataMap(body)["balances"])
+		snapshot.held = heldPlanIDs(snapshot.plans, snapshot.serverTime)
+		snapshot.metrics, snapshot.groups = balanceQuota(snapshot.balances)
+		if expiry := planExpiryGroup(snapshot.plans, snapshot.serverTime); expiry != nil {
 			snapshot.groups = append(snapshot.groups, *expiry)
 		}
 	}
@@ -613,9 +645,20 @@ func objectRows(value any) []map[string]any {
 // serverSeconds 取响应体里的服务端时间（秒）；缺失时返回 0。
 //
 // 用服务端时间而不是本机时钟：过期判定要跟上游口径一致，本机时钟漂移会让
-// 刚结束的活动继续显示成「已持有」。
+// 刚结束的活动继续显示成「已持有」。上游偶尔给 13 位毫秒时间戳，
+// core.GetUnixSeconds 负责把两种口径归一到秒。
 func serverSeconds(body map[string]any) int64 {
-	return int64(floatField(dataMap(body), "server_time"))
+	return core.GetUnixSeconds(dataMap(body), "server_time")
+}
+
+// billingEnvelopeComplete 报告 balance 响应是否带齐可解析的额度桶。
+//
+// 只要求 data.balances 是数组：空数组是合法答案（账号确实没有桶），而字段
+// 缺失说明上游改版或响应被截断。plans 不作硬要求——它只影响订阅名展示，
+// 把它也判成失败会让「上游少给一个装饰字段」变成查不到额度。
+func billingEnvelopeComplete(body map[string]any) bool {
+	_, okBalances := dataMap(body)["balances"].([]any)
+	return okBalances
 }
 
 // heldPlanIDs 从 balance 的 data.plans 里取账号已持有且生效的套餐 ID。
@@ -755,8 +798,8 @@ func parsePlan(raw map[string]any) *core.PlanInfo {
 		Description: core.RawStringField(raw, "description"),
 		Priority:    int(floatField(raw, "priority")),
 		Grants:      parsePlanGrants(raw),
-		StartsAt:    secondsToMillis(floatField(raw, "starts_at")),
-		EndsAt:      secondsToMillis(floatField(raw, "ends_at")),
+		StartsAt:    unixMillis(raw, "starts_at"),
+		EndsAt:      unixMillis(raw, "ends_at"),
 	}
 }
 
@@ -828,12 +871,16 @@ func normalizePlanID(planID string) string {
 	return strings.ToLower(strings.TrimSpace(planID))
 }
 
-// secondsToMillis 把上游秒级时间戳转毫秒；缺失/非正值返回 0。
-func secondsToMillis(seconds float64) int64 {
+// unixMillis 把上游时间戳统一成毫秒；缺失/非正值返回 0。
+//
+// 秒与毫秒两种口径都由 core.GetUnixSeconds 先归一到秒，避免 13 位毫秒
+// 时间戳被再乘 1000 后推到几十年后。
+func unixMillis(m map[string]any, keys ...string) int64 {
+	seconds := core.GetUnixSeconds(m, keys...)
 	if seconds <= 0 {
 		return 0
 	}
-	return int64(seconds * 1000)
+	return seconds * 1000
 }
 
 // ── 领取 ────────────────────────────────────────────────────────────────────
@@ -883,8 +930,8 @@ func (v *adapter) claimPlan(ctx context.Context, cred *Credential, req core.Clai
 	result := core.ClaimPlanResponse{PlanID: plan.PlanID, PlanName: plan.Name}
 	if claimed, okClaimed := dataMap(body)["plan"].(map[string]any); okClaimed {
 		result.PlanName = core.FirstNonEmpty(core.RawStringField(claimed, "name"), plan.Name)
-		result.StartsAt = secondsToMillis(floatField(claimed, "starts_at"))
-		result.EndsAt = secondsToMillis(floatField(claimed, "ends_at"))
+		result.StartsAt = unixMillis(claimed, "starts_at")
+		result.EndsAt = unixMillis(claimed, "ends_at")
 	}
 	return result, nil
 }
@@ -944,7 +991,7 @@ func claimQuotaRecovery(body map[string]any) int64 {
 	if !okPlan {
 		return 0
 	}
-	return secondsToMillis(floatField(plan, "ends_at"))
+	return unixMillis(plan, "ends_at")
 }
 
 // formatClaimRecovery 把恢复时间格式化成「今日/次日 HH:MM:SS」。
