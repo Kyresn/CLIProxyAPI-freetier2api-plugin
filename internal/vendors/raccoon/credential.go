@@ -52,6 +52,10 @@ type Credential struct {
 	ExpiresAt int64
 	UID       string
 	Nickname  string
+	// OfficeIdentity 是组织码（个人账号为空），作为 X-Org-Code 发送。
+	OfficeIdentity string
+	// DeviceID 是桌面客户端设备标识，非空时作为 X-Client-Device-ID 发送。
+	DeviceID string
 }
 
 // ParseCredential 解析小浣熊凭证 JSON。
@@ -76,6 +80,8 @@ func ParseCredential(raw []byte) (*Credential, error) {
 	cred.RefreshToken = getStr("refresh_token", "refreshToken")
 	cred.Nickname = getStr("nickname", "name", "label")
 	cred.UID = getStr("uid", "user_id", "userId")
+	cred.OfficeIdentity = getStr("office_identity", "officeIdentity", "org_code", "orgCode")
+	cred.DeviceID = getStr("device_id", "deviceId")
 	if cred.ExpiresAt = core.GetUnixSeconds(payload, "expires_at", "expiresAt"); cred.ExpiresAt == 0 {
 		// 响应里可能只有 JWT：从 claims 读 exp 兜底。
 		cred.ExpiresAt = core.JWTExpiry(cred.AccessToken)
@@ -175,6 +181,26 @@ func (c *Credential) NicknameValue() string {
 	return c.Nickname
 }
 
+// OfficeIdentityValue 返回加锁快照的组织码（个人账号为空）。
+func (c *Credential) OfficeIdentityValue() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.OfficeIdentity
+}
+
+// DeviceIDValue 返回加锁快照的客户端设备标识。
+func (c *Credential) DeviceIDValue() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.DeviceID
+}
+
 // Snapshot 返回加锁快照的 token 对。
 func (c *Credential) Snapshot() (access, refresh string) {
 	if c == nil {
@@ -257,6 +283,12 @@ func (c *Credential) StorageJSON() ([]byte, error) {
 	}
 	if c.Nickname != "" {
 		payload["nickname"] = c.Nickname
+	}
+	if c.OfficeIdentity != "" {
+		payload["office_identity"] = c.OfficeIdentity
+	}
+	if c.DeviceID != "" {
+		payload["device_id"] = c.DeviceID
 	}
 	return json.MarshalIndent(payload, "", "  ")
 }

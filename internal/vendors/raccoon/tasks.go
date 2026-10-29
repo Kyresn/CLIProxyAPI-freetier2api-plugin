@@ -27,10 +27,56 @@ import (
 // apiHTTPTimeout 是 JSON API 请求的上限。
 const apiHTTPTimeout = 30 * time.Second
 
-// ErrCheckinNotGranted 表示登录领取时上游返回 granted:false（今日已发放）。
-var ErrCheckinNotGranted = errors.New("今日积分已发放（幂等命中）")
+// ErrCheckinNotGranted 表示登录领取时上游返回 granted:false（该账号已领过）。
+var ErrCheckinNotGranted = errors.New("该账号已领取过桌面端登录奖励（每号一次）")
 
-// decodeAPIData 解析小浣熊统一的 {code,message,data} 信封，并把业务码映射成 core.Failure。
+// ClaimDailyGrant 触发登录奖励领取（POST {origin}/api/web/desktop/v1/login/points/grant）。
+//
+// 上游幂等：已领过时返回 granted:false，这里转成 ErrCheckinNotGranted。
+// 该奖励是**一次性**的（不是每日签到）：每日积分由服务端 00:00 自动发放，
+// 没有客户端可调用的签到端点。
+func ClaimDailyGrant(ctx context.Context, origin string, cred *Credential) (granted bool, credit int64, err error) {
+	if strings.TrimSpace(origin) == "" {
+		return false, 0, fmt.Errorf("upstream origin is not configured")
+	}
+	endpoint := strings.TrimRight(origin, "/") + DesktopBasePath + PointsGrantPath
+	// 请求体必须为空：参考实现（官方桌面端）发 POST 无 body。
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if errReq != nil {
+		return false, 0, fmt.Errorf("build grant request: %w", errReq)
+	}
+	ApplyGrantHeaders(req, cred.AccessTokenValue(), cred.OfficeIdentityValue(), cred.DeviceIDValue())
+
+	resp, errDo := hostbridge.Client(ctx, apiHTTPTimeout).Do(req)
+	if errDo != nil {
+		return false, 0, &core.Failure{Msg: "grant: " + errDo.Error(), Kind: core.FailureKindTransient}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	raw, errRead := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if errRead != nil {
+		return false, 0, &core.Failure{Status: resp.StatusCode, Msg: "read grant response: " + errRead.Error(), Kind: core.FailureKindTransient}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, 0, Classify(resp.StatusCode, string(raw))
+	}
+	data, errDecode := decodeAPIData[struct {
+		Granted bool `json:"granted"`
+		Popup   *struct {
+			Points int64 `json:"points"`
+		} `json:"popup"`
+	}](resp.StatusCode, raw, "grant")
+	if errDecode != nil {
+		return false, 0, errDecode
+	}
+	if !data.Granted {
+		return false, 0, ErrCheckinNotGranted
+	}
+	if data.Popup != nil {
+		credit = data.Popup.Points
+	}
+	return true, credit, nil
+}
 func decodeAPIData[T any](status int, raw []byte, what string) (T, error) {
 	var zero T
 	var envelope struct {
@@ -149,77 +195,57 @@ func FetchBalance(ctx context.Context, pointsBase string, cred *Credential) (ava
 	return int64(core.IntFromAny(data.AvailablePoints)), nil
 }
 
-// ClaimDailyGrant 触发登录领取积分（POST {origin}/api/web/desktop/v1/login/points/grant）。
-//
-// 上游幂等：今日已发放时返回 granted:false，这里转成 ErrCheckinNotGranted。
-// 每日发放本体是服务端 00:00 做的，这条只是兜住登录弹窗式的手动领取路径。
-func ClaimDailyGrant(ctx context.Context, origin string, cred *Credential) (granted bool, err error) {
-	if strings.TrimSpace(origin) == "" {
-		return false, fmt.Errorf("upstream origin is not configured")
-	}
-	endpoint := strings.TrimRight(origin, "/") + DesktopBasePath + PointsGrantPath
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader("{}"))
-	if errReq != nil {
-		return false, fmt.Errorf("build grant request: %w", errReq)
-	}
-	ApplyAPIHeaders(req, cred.AccessTokenValue())
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, errDo := hostbridge.Client(ctx, apiHTTPTimeout).Do(req)
-	if errDo != nil {
-		return false, &core.Failure{Msg: "grant: " + errDo.Error(), Kind: core.FailureKindTransient}
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	raw, errRead := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	if errRead != nil {
-		return false, &core.Failure{Status: resp.StatusCode, Msg: "read grant response: " + errRead.Error(), Kind: core.FailureKindTransient}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return false, Classify(resp.StatusCode, string(raw))
-	}
-	data, errDecode := decodeAPIData[struct {
-		Granted bool `json:"granted"`
-	}](resp.StatusCode, raw, "grant")
-	if errDecode != nil {
-		return false, errDecode
-	}
-	if !data.Granted {
-		return false, ErrCheckinNotGranted
-	}
-	return true, nil
+// UserProfile 是账号资料接口返回的展示与组织信息。
+type UserProfile struct {
+	UID            string
+	Nickname       string
+	OfficeIdentity string
 }
 
 // FetchUserInfo 查询账号资料（GET {auth_base}/user_info），补 uid / 昵称。
 func FetchUserInfo(ctx context.Context, authBase string, cred *Credential) (uid, nickname string, err error) {
+	profile, errProfile := FetchUserProfile(ctx, authBase, cred)
+	if errProfile != nil {
+		return "", "", errProfile
+	}
+	return profile.UID, profile.Nickname, nil
+}
+
+// FetchUserProfile 查询账号资料，同时带回组织码（X-Org-Code 的来源）。
+func FetchUserProfile(ctx context.Context, authBase string, cred *Credential) (*UserProfile, error) {
 	if strings.TrimSpace(authBase) == "" {
-		return "", "", fmt.Errorf("upstream auth base URL is not configured")
+		return nil, fmt.Errorf("upstream auth base URL is not configured")
 	}
 	req, errReq := http.NewRequestWithContext(ctx, http.MethodGet, authBase+UserInfoPath, nil)
 	if errReq != nil {
-		return "", "", fmt.Errorf("build user info request: %w", errReq)
+		return nil, fmt.Errorf("build user info request: %w", errReq)
 	}
 	ApplyAPIHeaders(req, cred.AccessTokenValue())
 
 	resp, errDo := hostbridge.Client(ctx, apiHTTPTimeout).Do(req)
 	if errDo != nil {
-		return "", "", &core.Failure{Msg: "user info: " + errDo.Error(), Kind: core.FailureKindTransient}
+		return nil, &core.Failure{Msg: "user info: " + errDo.Error(), Kind: core.FailureKindTransient}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	raw, errRead := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if errRead != nil {
-		return "", "", &core.Failure{Status: resp.StatusCode, Msg: "read user info response: " + errRead.Error(), Kind: core.FailureKindTransient}
+		return nil, &core.Failure{Status: resp.StatusCode, Msg: "read user info response: " + errRead.Error(), Kind: core.FailureKindTransient}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", "", Classify(resp.StatusCode, string(raw))
+		return nil, Classify(resp.StatusCode, string(raw))
 	}
 	data, errDecode := decodeAPIData[struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		ID             string `json:"id"`
+		Name           string `json:"name"`
+		OfficeIdentity string `json:"office_identity"`
 	}](resp.StatusCode, raw, "user info")
 	if errDecode != nil {
-		return "", "", errDecode
+		return nil, errDecode
 	}
-	return strings.TrimSpace(data.ID), strings.TrimSpace(data.Name), nil
+	return &UserProfile{
+		UID:            strings.TrimSpace(data.ID),
+		Nickname:       strings.TrimSpace(data.Name),
+		OfficeIdentity: strings.TrimSpace(data.OfficeIdentity),
+	}, nil
 }

@@ -16,10 +16,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -28,12 +28,6 @@ import (
 	"freetier2api-plugin/cpasdk/pluginapi"
 	"freetier2api-plugin/internal/core"
 	"freetier2api-plugin/internal/hostbridge"
-)
-
-const (
-	// checkinDeviceBrand/Type 与 Trae2api-cn 的默认签到设备一致。
-	checkinDeviceBrand = "ASUS TUF Gaming A15 FA507RM_FA507RM"
-	checkinDeviceType  = "windows"
 )
 
 func SupportsCheckin(cfg Config) bool { return cfg.supportsCheckin() }
@@ -53,23 +47,55 @@ func Checkin(ctx context.Context, cred *Credential, cfg Config) (*CheckinResult,
 		return nil, fmt.Errorf("trae 国际版无签到活动")
 	}
 
-	headers := checkinHeaders(cred)
+	headers, errHeaders := checkinHeaders(cred, cfg)
+	if errHeaders != nil {
+		return nil, errHeaders
+	}
 
+	// 状态预查失败不阻断领取：null 只表示「无法确认」，不是「不能领」。
+	// 把瞬时故障当成签到失败会让账号整天漏签。
 	status, errStatus := fetchCheckinStatus(ctx, cfg, headers)
-	if errStatus != nil {
-		return nil, errStatus
-	}
-	if !status.Enable {
-		return nil, fmt.Errorf("签到活动未开启")
-	}
-	if status.CheckedIn {
-		return &CheckinResult{Already: true, Credit: status.Credits, Message: "今日已完成签到"}, nil
+	if errStatus == nil && status != nil {
+		if !status.Enable {
+			return nil, fmt.Errorf("签到活动未开启")
+		}
+		if status.CheckedIn {
+			return &CheckinResult{Already: true, Credit: status.Credits, Message: "今日已完成签到"}, nil
+		}
 	}
 
 	if errClaim := claimCheckinCredits(ctx, cfg, headers); errClaim != nil {
 		return nil, errClaim
 	}
-	return &CheckinResult{Credit: status.Credits, Message: "签到成功"}, nil
+	// claim 响应不含积分数；领取成功后补查一次状态，报告真实所得。
+	credit := int64(0)
+	if status != nil {
+		credit = status.Credits
+	}
+	if fresh, errFresh := fetchCheckinStatus(ctx, cfg, headers); errFresh == nil && fresh != nil {
+		credit = fresh.Credits
+	}
+	return &CheckinResult{Credit: credit, Message: "签到成功"}, nil
+}
+
+// flexInt64 宽容解析业务码/积分：接受 JSON 数字与数字字符串。
+//
+// 上游网关对同一字段可能下发 0 或 "0"；用 int 直接解码会因类型不符整条
+// 响应解析失败，把一次成功签到报成 decode 错误。
+type flexInt64 int64
+
+func (f *flexInt64) UnmarshalJSON(data []byte) error {
+	trimmed := strings.Trim(strings.TrimSpace(string(data)), `"`)
+	if trimmed == "" || trimmed == "null" {
+		*f = 0
+		return nil
+	}
+	parsed, errParse := strconv.ParseFloat(trimmed, 64)
+	if errParse != nil {
+		return errParse
+	}
+	*f = flexInt64(parsed)
+	return nil
 }
 
 type checkinStatus struct {
@@ -84,38 +110,52 @@ func fetchCheckinStatus(ctx context.Context, cfg Config, headers map[string]stri
 		return nil, errPost
 	}
 	var result struct {
-		Code      int    `json:"code"`
-		Message   string `json:"message"`
-		Enable    bool   `json:"enable"`
-		CheckedIn bool   `json:"checked_in"`
-		Credits   int64  `json:"credits"`
+		Code      flexInt64 `json:"code"`
+		Message   string    `json:"message"`
+		Enable    bool      `json:"enable"`
+		CheckedIn bool      `json:"checked_in"`
+		Credits   flexInt64 `json:"credits"`
 	}
 	if errJSON := json.Unmarshal(raw, &result); errJSON != nil {
 		return nil, fmt.Errorf("decode checkin status: %w", errJSON)
 	}
 	if result.Code != 0 {
-		return nil, Classify(http.StatusOK, string(raw))
+		// 业务码错误的 HTTP 状态是 200，但传 0 才能让下游按业务类型处理
+		// （传 200 会让 Failure.HTTPStatus() 返回 200，限流/凭证策略不生效）。
+		return nil, Classify(0, string(raw))
 	}
-	return &checkinStatus{Enable: result.Enable, CheckedIn: result.CheckedIn, Credits: result.Credits}, nil
+	return &checkinStatus{Enable: result.Enable, CheckedIn: result.CheckedIn, Credits: int64(result.Credits)}, nil
 }
 
 func claimCheckinCredits(ctx context.Context, cfg Config, headers map[string]string) error {
-	raw, errPost := postCheckin(ctx, cfg.CheckinHost+EpCheckinClaim, headers)
-	if errPost != nil {
-		return errPost
+	// 只在传输层失败（没有 HTTP 响应）时重试；业务码错误重试无意义。
+	var lastErr error
+	for attempt := 0; attempt <= 3; attempt++ {
+		raw, errPost := postCheckin(ctx, cfg.CheckinHost+EpCheckinClaim, headers)
+		if errPost != nil {
+			if _, isUpstream := errPost.(*core.Failure); isUpstream {
+				return errPost
+			}
+			lastErr = errPost
+			if attempt < 3 {
+				time.Sleep(time.Second)
+			}
+			continue
+		}
+		var result struct {
+			Code    flexInt64 `json:"code"`
+			Message string    `json:"message"`
+		}
+		if errJSON := json.Unmarshal(raw, &result); errJSON != nil {
+			return fmt.Errorf("decode checkin claim: %w", errJSON)
+		}
+		if result.Code == 0 {
+			return nil
+		}
+		// 9074 = 设备级限流；其余业务码原样分类上抛（状态传 0，见 fetchCheckinStatus）。
+		return Classify(0, string(raw))
 	}
-	var result struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	}
-	if errJSON := json.Unmarshal(raw, &result); errJSON != nil {
-		return fmt.Errorf("decode checkin claim: %w", errJSON)
-	}
-	if result.Code == 0 {
-		return nil
-	}
-	// 9074 = 设备级限流；其余业务码原样分类上抛。
-	return Classify(http.StatusOK, string(raw))
+	return lastErr
 }
 
 func postCheckin(ctx context.Context, url string, headers map[string]string) ([]byte, error) {
@@ -139,36 +179,124 @@ func postCheckin(ctx context.Context, url string, headers map[string]string) ([]
 	return body, nil
 }
 
-// checkinHeaders 装配签到/额度共用的请求头。
-func checkinHeaders(cred *Credential) map[string]string {
+// checkinHeaders 装配签到/额度共用的完整客户端请求头。
+//
+// 参考实现（trae-mate）实测：签到端点接受的是**约 20 个头的官方客户端形态**，
+// 只发 Authorization + 设备头会被上游拒绝或归到不同设备配额。设备身份必须
+// 基于账号 uid 确定性派生：同一账号稳定、不同账号互不共享（上游按设备限流）。
+func checkinHeaders(cred *Credential, _ Config) (map[string]string, error) {
+	uid := traeUserID(cred)
+	if uid == "" {
+		return nil, fmt.Errorf("trae: 缺少账号 uid，无法派生签到设备身份")
+	}
+	return checkinHeadersForUID(cred, uid), nil
+}
+
+// quotaHeaders 是额度查询的头：没有 uid 时退回凭证设备号，不让额度查询失败。
+//
+// 签到必须拒绝共享默认设备身份（上游按设备限流）；额度只读接口没有这个
+// 约束，用一个稳定的账号级标识即可。
+func quotaHeaders(cred *Credential, _ Config) map[string]string {
+	if uid := traeUserID(cred); uid != "" {
+		return checkinHeadersForUID(cred, uid)
+	}
+	return checkinHeadersForUID(cred, strings.TrimSpace(cred.DeviceID))
+}
+
+// checkinHeadersForUID 用给定身份装配官方客户端请求头。
+func checkinHeadersForUID(cred *Credential, uid string) map[string]string {
 	return map[string]string{
-		"Authorization":  "Cloud-IDE-JWT " + cred.AccessToken,
-		"Content-Type":   "application/json",
-		"X-Device-Id":    CheckinDeviceID(cred),
-		"X-Device-Brand": checkinDeviceBrand,
-		"X-Device-Type":  checkinDeviceType,
+		"Content-Type":       "application/json",
+		"Accept":             "*/*",
+		"Accept-Language":    "zh-CN",
+		"User-Agent":         traeCheckinUserAgent,
+		"Authorization":      "Cloud-IDE-JWT " + cred.AccessToken,
+		"X-Market-Client-Id": traeCheckinMarketClientID,
+		"X-Market-User-Id":   deriveMarketUserID(uid),
+		"X-User-Region":      "CN",
+		"X-Device-Id":        deriveCheckinDeviceID(uid),
+		"X-Lgw-Req-Sdk-Type": "3",
+		"Package-Type":       "stable_cn",
+		"X-Lscbd-Aid":        "787976",
+		"X-Lscbd-Platform":   "windows",
+		// 参考实现调用时产品信息为空，实际发送的就是字面量 undefined；
+		// 客户端身份由 User-Agent 表达，App-Version 不参与校验。
+		"App-Version":      "undefined",
+		"X-Tt-Trace-Id":    "00-" + core.RandomHex(8) + "-01",
+		"Vscode-Sessionid": deriveCheckinSessionID(uid),
+		"X-Request-Id":     newUUID(),
+		"Sec-Fetch-Dest":   "empty",
+		"Sec-Fetch-Mode":   "no-cors",
+		"Sec-Fetch-Site":   "none",
 	}
 }
 
-// CheckinDeviceID 派生签到用的 16 位设备号：sha256(账号身份) mod 10^16。
+const (
+	// traeCheckinUserAgent / traeCheckinMarketClientID 是官方 TRAE SOLO CN
+	// 客户端在签到请求里使用的固定 UA 与市场客户端标识。
+	traeCheckinUserAgent       = "VSCode 1.107.1 (TRAE SOLO CN)"
+	traeCheckinMarketClientID  = "VSCode 1.107.1"
+)
+
+// traeUserID 返回签到设备身份所用的账号 id。
 //
-// 身份优先取 JWT payload.data.id（与 Trae2api-cn 一致，token 刷新后保持稳定），
-// 退回凭证 uid / device_id。
+// 优先 JWT payload.data.id（token 刷新后稳定），退回凭证 uid。为空时调用方
+// 必须拒绝发请求：共用默认设备号会让多账号互相抢「每设备每天一次」的配额。
+func traeUserID(cred *Credential) string {
+	if identity := jwtIdentity(cred.AccessToken); identity != "" {
+		return identity
+	}
+	return strings.TrimSpace(cred.UID)
+}
+
+// CheckinDeviceID 派生签到用的 15 位设备号（基于账号 uid 的确定性 SHA-256 流）。
 func CheckinDeviceID(cred *Credential) string {
-	identity := jwtIdentity(cred.AccessToken)
-	if identity == "" {
-		identity = cred.UID
+	uid := traeUserID(cred)
+	if uid == "" {
+		return ""
 	}
-	if identity == "" {
-		identity = cred.DeviceID
+	return deriveCheckinDeviceID(uid)
+}
+
+func deriveCheckinDeviceID(uid string) string {
+	stream := seededStream(uid, "devid", 15)
+	out := make([]byte, len(stream))
+	for index, value := range stream {
+		out[index] = '0' + value%10
 	}
-	if identity == "" {
-		identity = "default_trae_user"
+	return string(out)
+}
+
+// deriveMarketUserID 派生 UUID v4 形态的 X-Market-User-Id。
+func deriveMarketUserID(uid string) string {
+	bs := seededStream(uid, "market", 16)
+	bs[6] = (bs[6] & 0x0F) | 0x40
+	bs[8] = (bs[8] & 0x3F) | 0x80
+	hex := fmt.Sprintf("%x", bs)
+	return hex[0:8] + "-" + hex[8:12] + "-" + hex[12:16] + "-" + hex[16:20] + "-" + hex[20:32]
+}
+
+// deriveCheckinSessionID 派生 64 位 hex 的 Vscode-Sessionid。
+func deriveCheckinSessionID(uid string) string {
+	return fmt.Sprintf("%x", seededStream(uid, "sess", 32))
+}
+
+// seededStream 是确定性伪随机流：SHA256(salt:seed || counterBE32) 串联。
+//
+// 与参考实现（trae-mate device_map.rs）逐字节一致，保证同一账号跨进程、
+// 跨版本得到同一套设备标识。
+func seededStream(seed, salt string, nbytes int) []byte {
+	prefix := salt + ":" + seed
+	out := make([]byte, 0, nbytes)
+	for counter := uint32(0); len(out) < nbytes; counter++ {
+		hasher := sha256.New()
+		_, _ = hasher.Write([]byte(prefix))
+		var counterBytes [4]byte
+		binary.BigEndian.PutUint32(counterBytes[:], counter)
+		_, _ = hasher.Write(counterBytes[:])
+		out = append(out, hasher.Sum(nil)...)
 	}
-	sum := sha256.Sum256([]byte(identity))
-	n := new(big.Int).SetBytes(sum[:])
-	n.Mod(n, big.NewInt(10000000000000000))
-	return fmt.Sprintf("%016d", n)
+	return out[:nbytes]
 }
 
 // jwtIdentity 从 Cloud-IDE-JWT 解出账号 id（payload.data.id）。
@@ -204,7 +332,7 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 		return nil, core.NewPluginError("quota_unsupported", "Trae 国际版无额度查询接口", http.StatusNotImplemented)
 	}
 
-	payload, errBody := json.Marshal(map[string]any{"require_usage": true, "req_source": 1})
+	payload, errBody := json.Marshal(map[string]any{"require_usage": true, "req_source": 2})
 	if errBody != nil {
 		return nil, errBody
 	}
@@ -212,7 +340,7 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 	if errReq != nil {
 		return nil, errReq
 	}
-	for key, value := range checkinHeaders(cred) {
+	for key, value := range quotaHeaders(cred, cfg) {
 		req.Header.Set(key, value)
 	}
 
@@ -246,18 +374,10 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 	}
 
 	var total, used float64
-	unlimited := false
 	for _, pack := range result.UserEntitlementPackList {
-		// product_type=0 是功能开关包，没有积分额度。
-		if pack.EntitlementBaseInfo.ProductType != 2 {
-			continue
-		}
 		limit, okLimit := flexFloat(pack.EntitlementBaseInfo.Quota.CreditsLimit)
-		if !okLimit {
-			continue
-		}
-		if limit < 0 {
-			unlimited = true
+		// 只统计有正额度的积分包：0 / 负数表示无额度或非积分包。
+		if !okLimit || limit <= 0 {
 			continue
 		}
 		total += limit
@@ -280,9 +400,6 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 			{Key: "credit_total", Label: "总额度", Value: total, Unit: "credits"},
 			{Key: "credit_used", Label: "已用积分", Value: used, Unit: "credits"},
 		},
-	}
-	if unlimited {
-		response.Summary[0] = pluginapi.QuotaMetric{Key: "credit_remain", Label: "剩余积分", Value: -1, Unit: "unlimited"}
 	}
 	return response, nil
 }

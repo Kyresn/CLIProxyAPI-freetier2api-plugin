@@ -233,25 +233,45 @@ const DesktopVersion = "0.4.8"
 
 // ResolveIdentity 组装本次签到要用的设备身份。
 //
-// cred 提供账号自带的身份字段（凭证文件里手写的 machine_token / machine_type），
-// raw 是插件全局配置（qoder_machine_token / qoder_machine_type / …）。
-// 两者都没有时返回零值——调用方据此**不发**任何机器头。
+// 优先级：
+//  1. 用户显式提供的身份（凭证字段 → 插件全局配置）——原样使用；
+//  2. 本机 Qoder 客户端自动生成的身份（runtime-info → machine_token.json）；
+//  3. 都没有时返回零值，调用方据此**不发**任何机器头。
+//
+// 用户只提供一半身份时整体作废且不回退本机：那是用户显式的错误配置，
+// 静默换成另一套身份会让问题更难排查。
 func ResolveIdentity(cred *Credential, raw map[string]string) MachineIdentity {
 	identity := MachineIdentity{
 		Version: core.FirstNonEmpty(strings.TrimSpace(raw["qoder_desktop_version"]), DesktopVersion),
 	}
+	userProvided := false
 	if cred != nil {
 		identity.Token = strings.TrimSpace(cred.MachineToken)
 		identity.Type = strings.TrimSpace(cred.MachineType)
 		identity.Code = strings.TrimSpace(cred.MachineCode)
+		userProvided = identity.Token != "" || identity.Type != "" || identity.Code != ""
 	}
-	identity.Token = core.FirstNonEmpty(identity.Token, strings.TrimSpace(raw["qoder_machine_token"]))
-	identity.Type = core.FirstNonEmpty(identity.Type, strings.TrimSpace(raw["qoder_machine_type"]))
-	identity.Code = core.FirstNonEmpty(identity.Code, strings.TrimSpace(raw["qoder_machine_code"]))
-	if !identity.Native() {
-		// 只有一个头等于没有：上游要求成对，半套身份既解锁不了活动，还会
-		// 让请求形态偏离官方客户端。清空以免调用方误以为「有身份」。
-		return MachineIdentity{Version: identity.Version}
+	configToken := strings.TrimSpace(raw["qoder_machine_token"])
+	configType := strings.TrimSpace(raw["qoder_machine_type"])
+	configCode := strings.TrimSpace(raw["qoder_machine_code"])
+	userProvided = userProvided || configToken != "" || configType != "" || configCode != ""
+	identity.Token = core.FirstNonEmpty(identity.Token, configToken)
+	identity.Type = core.FirstNonEmpty(identity.Type, configType)
+	identity.Code = core.FirstNonEmpty(identity.Code, configCode)
+
+	if userProvided {
+		if !identity.Native() {
+			// 只有一个头等于没有：上游要求成对，半套身份既解锁不了活动，还会
+			// 让请求形态偏离官方客户端。清空以免调用方误以为「有身份」。
+			return MachineIdentity{Version: identity.Version}
+		}
+		return identity
 	}
-	return identity
+
+	// 没有用户身份时使用本机官方客户端生成的身份（见 machine.go）。
+	if local := resolveLocalMachineIdentity(); local.Native() {
+		local.Version = identity.Version
+		return local
+	}
+	return MachineIdentity{Version: identity.Version}
 }
