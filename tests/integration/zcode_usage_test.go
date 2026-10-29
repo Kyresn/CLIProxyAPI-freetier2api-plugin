@@ -35,7 +35,7 @@ func TestZCodeExecutorStreamUsage(t *testing.T) {
 			t.Run(option.name+"/"+response, func(t *testing.T) {
 				host := installFakeHost(t)
 				setupTestPlugin(t)
-				host.addAccount("1", "zcode-test.json", `{"vendor":"zcode","api_key":"k.s"}`)
+				host.addAccount("1", "zcodeglobal-test.json", `{"vendor":"zcodeglobal","api_key":"k.s"}`)
 				host.setUpstream(func(method, url, body string) fakeUpstreamResponse {
 					if method != http.MethodPost || !strings.HasSuffix(url, "/messages") {
 						return fakeUpstreamResponse{Status: http.StatusNotFound, Body: `{}`}
