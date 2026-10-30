@@ -7,8 +7,15 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"freetier2api-plugin/internal/hostbridge/hostbridgetest"
+	"freetier2api-plugin/internal/hostbridge"
 )
+
+// useLoopbackHost 把宿主 HTTP 桥接到真实网络。
+func useLoopbackHost(t *testing.T) {
+	t.Helper()
+	hostbridge.ConfigureLoopback()
+	t.Cleanup(func() { hostbridge.Configure(nil) })
+}
 
 // TestApplyGrantHeadersUsesDesktopEnum 锁住登录奖励接口的平台枚举与组织头。
 func TestApplyGrantHeadersUsesDesktopEnum(t *testing.T) {
@@ -36,7 +43,7 @@ func TestApplyGrantHeadersUsesDesktopEnum(t *testing.T) {
 
 // TestClaimDailyGrantParsesPopupPoints 锁住领取金额来自 data.popup.points。
 func TestClaimDailyGrantParsesPopupPoints(t *testing.T) {
-	hostbridgetest.UseLoopbackHost(t)
+	useLoopbackHost(t)
 	var gotBody []byte
 	var gotPlatform string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +71,7 @@ func TestClaimDailyGrantParsesPopupPoints(t *testing.T) {
 
 // TestClaimDailyGrantAlreadyClaimed 锁住 granted:false 的幂等语义。
 func TestClaimDailyGrantAlreadyClaimed(t *testing.T) {
-	hostbridgetest.UseLoopbackHost(t)
+	useLoopbackHost(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"code":0,"data":{"granted":false}}`))
 	}))
