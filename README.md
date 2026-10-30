@@ -34,7 +34,7 @@
 | `raccoon` | 小浣熊 | — | API Key | `raccoon-*.json` |
 | `opencodezen` | OpenCode ZEN | `global` | API Key | `opencodezen-*.json` |
 | `cline` | Cline | `global` | WorkOS 设备授权 | `cline-*.json` |
-| `zcodecn` | ZCode 国内版 | `cn` | OAuth CLI 授权（bigmodel） | `zcodecn-*.json` |
+| `zcodecn` | ZCode 国内版 | `cn` | OAuth CLI 授权（智谱开放平台 bigmodel） | `zcodecn-*.json` |
 | `zcodeglobal` | ZCode 国际版 | `global` | OAuth CLI 授权（z.ai） | `zcodeglobal-*.json` |
 | `traecn` | Trae 国内版 | `cn` | OAuth 授权 | `traecn-*.json` |
 | `traeglobal` | Trae 国际版 | `global` | OAuth 授权 | `traeglobal-*.json` |
@@ -42,7 +42,7 @@
 | `minimaxcodecn` | MiniMax Code 国内版 | `cn` | OAuth 设备授权 | `minimaxcodecn-*.json` |
 | `minimaxcodeglobal` | MiniMax Code 国际版 | `global` | OAuth 设备授权 | `minimaxcodeglobal-*.json` |
 
-> 旧 ZCode 凭证 `zcode-*.json` 仍可加载：按 `region` 归属，缺 `region` 默认国际版；文件名保持不变。
+> 旧 ZCode 凭证 `zcode-*.json` 仍可加载：按 `region` 归属，缺 `region` 默认国际版，文件名保持不变；`disabled_models` 与模型别名里已有的 `zcode:<模型>` 也继续映射到 `zcodeglobal`（拆分前只有国际版）。
 
 ## 快速开始
 
@@ -139,7 +139,7 @@ curl http://localhost:8317/v1/messages \
 | --- | --- | --- | --- |
 | `enabled_realms` | string | `cn,global` | 启用的区域（`cn` / `global`） |
 | `auto_checkin` | bool | `true` | 每日自动签到开关 |
-| `auto_checkin_at` | string | `10:00` | 每日自动签到执行时间（`HH:MM`） |
+| `auto_checkin_at` | string | `10:00` | 每日自动签到时间（`HH:MM`，本地时区）。排程粒度为整点，分钟不为 0 时顺延到下一整点，保证不会早于设定时刻执行 |
 | `auto_tasks` | bool | `true` | 每日自动任务开关 |
 | `checkin_history_limit` | int | `30` | 每个账号保留的签到历史条数（`<=0` 用默认值 30；控制台签到列可展开查看） |
 | `prompt_mode` | string | `passthrough` | 提示词防御模式：`passthrough`（透传）/ `custom`（替换）/ `append`（追加） |

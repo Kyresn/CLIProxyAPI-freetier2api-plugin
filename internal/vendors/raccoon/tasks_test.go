@@ -2,58 +2,13 @@ package raccoon
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"freetier2api-plugin/internal/hostbridge"
+	"freetier2api-plugin/internal/hostbridge/hostbridgetest"
 )
-
-// useLoopbackHost 把宿主 HTTP 桥换成直连 httptest 的转发器。
-func useLoopbackHost(t *testing.T) {
-	t.Helper()
-	hostbridge.Configure(func(callbackID, method string, payload any) (json.RawMessage, error) {
-		raw, errMarshal := json.Marshal(payload)
-		if errMarshal != nil {
-			return nil, errMarshal
-		}
-		var req struct {
-			Method  string              `json:"method"`
-			URL     string              `json:"url"`
-			Headers map[string][]string `json:"headers"`
-			Body    []byte              `json:"body"`
-		}
-		if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
-			return nil, errUnmarshal
-		}
-		httpReq, errNew := http.NewRequest(req.Method, req.URL, nil)
-		if errNew != nil {
-			return nil, errNew
-		}
-		for key, values := range req.Headers {
-			for _, value := range values {
-				httpReq.Header.Add(key, value)
-			}
-		}
-		resp, errDo := http.DefaultClient.Do(httpReq)
-		if errDo != nil {
-			return nil, errDo
-		}
-		defer func() { _ = resp.Body.Close() }()
-		body, errRead := io.ReadAll(resp.Body)
-		if errRead != nil {
-			return nil, errRead
-		}
-		return json.Marshal(map[string]any{
-			"StatusCode": resp.StatusCode,
-			"Headers":    resp.Header,
-			"Body":       body,
-		})
-	})
-	t.Cleanup(func() { hostbridge.Configure(nil) })
-}
 
 // TestApplyGrantHeadersUsesDesktopEnum 锁住登录奖励接口的平台枚举与组织头。
 func TestApplyGrantHeadersUsesDesktopEnum(t *testing.T) {
@@ -81,7 +36,7 @@ func TestApplyGrantHeadersUsesDesktopEnum(t *testing.T) {
 
 // TestClaimDailyGrantParsesPopupPoints 锁住领取金额来自 data.popup.points。
 func TestClaimDailyGrantParsesPopupPoints(t *testing.T) {
-	useLoopbackHost(t)
+	hostbridgetest.UseLoopbackHost(t)
 	var gotBody []byte
 	var gotPlatform string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +64,7 @@ func TestClaimDailyGrantParsesPopupPoints(t *testing.T) {
 
 // TestClaimDailyGrantAlreadyClaimed 锁住 granted:false 的幂等语义。
 func TestClaimDailyGrantAlreadyClaimed(t *testing.T) {
-	useLoopbackHost(t)
+	hostbridgetest.UseLoopbackHost(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"code":0,"data":{"granted":false}}`))
 	}))

@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"freetier2api-plugin/internal/core"
@@ -32,7 +31,7 @@ const (
 	protocolName = "qoder"
 )
 
-// Region / RegionCN / RegionGlobal / NormalizeRegion 定义在 endpoints.go
+// Region / RegionCN / RegionGlobal / NormalizeRegion 定义在 chat.go
 // ——它们同时服务端点表，属于协议层的基础设施。
 
 // VendorIDFor 返回该区域对应的供应商标识。
@@ -238,20 +237,16 @@ func (m MachineIdentity) Native() bool { return m.Token != "" && m.Type != "" }
 // DesktopVersion 是活动平台认的桌面端版本（cosy-version 头）。
 const DesktopVersion = "0.4.8"
 
-// ResolveIdentity 组装本次签到要用的设备身份。
+// ResolveIdentity 组装本次请求要用的设备身份。
 //
 // 优先级：
 //  1. 用户显式提供的身份（凭证字段 → 插件全局配置）——原样使用；
-//  2. 本机 Qoder 客户端自动生成的身份（runtime-info → machine_token.json）；
+//  2. 本机 Qoder 客户端签发的身份（local，见 LocalMachineIdentity）；
 //  3. 都没有时返回零值，调用方据此**不发**任何机器头。
-//
-// region 决定 runtime-info 的 environment 参数：国内版 "0"、国际版 "3"。
-// 两套身份不可混用——传错会拿到另一套 machineToken，服务端因此不下发
-// 可领取活动。
 //
 // 用户只提供一半身份时整体作废且不回退本机：那是用户显式的错误配置，
 // 静默换成另一套身份会让问题更难排查。
-func ResolveIdentity(region Region, cred *Credential, raw map[string]string, cache *machineIdentityCache) MachineIdentity {
+func ResolveIdentity(cred *Credential, raw map[string]string, local MachineIdentity) MachineIdentity {
 	identity := MachineIdentity{
 		Version: core.FirstNonEmpty(strings.TrimSpace(raw["qoder_desktop_version"]), DesktopVersion),
 	}
@@ -279,13 +274,6 @@ func ResolveIdentity(region Region, cred *Credential, raw map[string]string, cac
 		return identity
 	}
 
-	environment := machineEnvironment(region)
-	var local MachineIdentity
-	if cache != nil {
-		local = cache.resolve(environment)
-	} else {
-		local = readLocalMachineIdentity(environment)
-	}
 	if local.Native() {
 		local.Version = identity.Version
 		return local
@@ -293,51 +281,24 @@ func ResolveIdentity(region Region, cred *Credential, raw map[string]string, cac
 	return MachineIdentity{Version: identity.Version}
 }
 
-// machineEnvironment 返回 runtime-info 的 environment 参数。
-func machineEnvironment(region Region) string {
-	if region == RegionCN {
-		return "0"
-	}
-	return "3"
-}
-
-// machineIdentityCache 是按实例缓存的设备身份。
+// LocalMachineIdentity 解析本机官方组件签发的设备身份；拿不到时返回零值。
 //
-// 不声明包级可变变量：两个区域实例各自持有一份，互不污染；测试通过传 nil
-// 跳过缓存。
-type machineIdentityCache struct {
-	mu     sync.Mutex
-	loaded bool
-	value  MachineIdentity
-}
-
-func (c *machineIdentityCache) resolve(environment string) MachineIdentity {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.loaded {
-		return c.value
-	}
-	c.value = readLocalMachineIdentity(environment)
-	c.loaded = true
-	return c.value
-}
-
-// ---- 本机设备身份解析 ----
-
-const (
-	// runtimeInfoTimeout 限制单次 spawn（实测正常约 3.8 秒）。
-	runtimeInfoTimeout = 20 * time.Second
-)
-
-// qoderDataDirNames 是本机 Qoder 客户端的数据目录名（国际版 / 国内版）。
-var qoderDataDirNames = []string{".qoder", ".qoder-cn"}
-
-// readLocalMachineIdentity 解析本机设备身份；拿不到返回零值。
-func readLocalMachineIdentity(environment string) MachineIdentity {
-	if identity, okIdentity := readRuntimeInfoIdentity(environment); okIdentity {
+// 上游对 cosy-machinetoken + cosy-machinetype 做精确校验：缺少这一对头时
+// /sash/api/v1/me/campaigns 只下发 VIEW_DETAILS，**不会**下发可领取的
+// CLAIM_BENEFIT，于是插件误判「今天没有可领取的活动」。
+//
+// 身份由官方组件 runtime-info 生成，且与 environment 参数绑定：
+//  1. 主路径：spawn 本机 Qoder 客户端的 runtime-info <env> --account-stdin；
+//  2. 退路：读取客户端缓存的 machine_token.json；
+//  3. 都拿不到时返回零值（不发机器头），由用户手工配置兜底。
+//
+// environment 必须按区域选：官方 asar 里 environment === 'global' ? 3 : 0，
+// 国内版账号配国际版 environment 会拿到另一套身份，活动同样被过滤。
+func LocalMachineIdentity(region Region) MachineIdentity {
+	if identity, okIdentity := readRuntimeInfoIdentity(region); okIdentity {
 		return identity
 	}
-	for _, path := range machineTokenPaths() {
+	for _, path := range machineTokenPaths(region) {
 		if identity, okIdentity := readMachineTokenFile(path); okIdentity {
 			return identity
 		}
@@ -345,16 +306,43 @@ func readLocalMachineIdentity(environment string) MachineIdentity {
 	return MachineIdentity{}
 }
 
+// qoderClient 是本机 Qoder 客户端在该区域的目录特征。
+type qoderClient struct {
+	// dataDir 是 Unix 下的数据目录名（<home>/<dataDir>）。
+	dataDir string
+	// product 是 Windows 下 %APPDATA% 里的产品目录名。
+	product string
+}
+
+// clientFor 返回该区域对应的客户端目录特征。
+func clientFor(region Region) qoderClient {
+	if region == RegionCN {
+		return qoderClient{dataDir: ".qoder-cn", product: "Qoder CN"}
+	}
+	return qoderClient{dataDir: ".qoder", product: "Qoder"}
+}
+
+// runtimeInfoEnvironment 是 runtime-info 的第一个位置参数（官方 asar 口径）。
+func runtimeInfoEnvironment(region Region) string {
+	if region == RegionCN {
+		return "0"
+	}
+	return "3"
+}
+
+// runtimeInfoTimeout 限制单次 spawn（实测正常约 3.8 秒）。
+const runtimeInfoTimeout = 20 * time.Second
+
 // readRuntimeInfoIdentity 实时调用官方 runtime-info 生成身份。
-func readRuntimeInfoIdentity(environment string) (MachineIdentity, bool) {
-	executable, okExecutable := locateRuntimeInfo()
+func readRuntimeInfoIdentity(region Region) (MachineIdentity, bool) {
+	executable, okExecutable := locateRuntimeInfo(region)
 	if !okExecutable {
 		return MachineIdentity{}, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), runtimeInfoTimeout)
 	defer cancel()
 
-	command := exec.CommandContext(ctx, executable, environment, "--account-stdin")
+	command := exec.CommandContext(ctx, executable, runtimeInfoEnvironment(region), "--account-stdin")
 	command.Stdin = strings.NewReader(`{"account":""}`)
 	output, errRun := command.Output()
 	if errRun != nil {
@@ -367,7 +355,7 @@ func readRuntimeInfoIdentity(environment string) (MachineIdentity, bool) {
 //
 // 路径形态：<home>/<dataDir>/.bin/umid-<hash>/runtime-info(.exe)。
 // 目录名带哈希（随版本变化），因此枚举而不是写死。
-func locateRuntimeInfo() (string, bool) {
+func locateRuntimeInfo(region Region) (string, bool) {
 	if override := strings.TrimSpace(os.Getenv("QODER_RUNTIME_INFO")); override != "" {
 		if fileExists(override) {
 			return override, true
@@ -382,20 +370,18 @@ func locateRuntimeInfo() (string, bool) {
 	if runtime.GOOS == "windows" {
 		name = "runtime-info.exe"
 	}
-	for _, dirName := range qoderDataDirNames {
-		binDir := filepath.Join(home, dirName, ".bin")
-		entries, errRead := os.ReadDir(binDir)
-		if errRead != nil {
+	binDir := filepath.Join(home, clientFor(region).dataDir, ".bin")
+	entries, errRead := os.ReadDir(binDir)
+	if errRead != nil {
+		return "", false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "umid-") {
 			continue
 		}
-		for _, entry := range entries {
-			if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "umid-") {
-				continue
-			}
-			candidate := filepath.Join(binDir, entry.Name(), name)
-			if fileExists(candidate) {
-				return candidate, true
-			}
+		candidate := filepath.Join(binDir, entry.Name(), name)
+		if fileExists(candidate) {
+			return candidate, true
 		}
 	}
 	return "", false
@@ -425,24 +411,21 @@ func parseRuntimeInfoOutput(output string) (MachineIdentity, bool) {
 	return MachineIdentity{Token: token, Type: machineType, Code: strings.TrimSpace(payload.MachineCode)}, true
 }
 
-// machineTokenPaths 返回客户端磁盘缓存的候选路径（退路）。
-func machineTokenPaths() []string {
+// machineTokenPaths 返回该区域客户端磁盘缓存的候选路径（退路）。
+func machineTokenPaths(region Region) []string {
 	if override := strings.TrimSpace(os.Getenv("QODER_MACHINE_TOKEN_PATH")); override != "" {
 		return []string{override}
 	}
-	paths := make([]string, 0, 6)
+	client := clientFor(region)
+	paths := make([]string, 0, 3)
 	if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
-		for _, dirName := range []string{"Qoder", "Qoder CN"} {
-			paths = append(paths, filepath.Join(appData, dirName, "SharedClientCache", "cache", "machine_token.json"))
-		}
+		paths = append(paths, filepath.Join(appData, client.product, "SharedClientCache", "cache", "machine_token.json"))
 	}
 	home, errHome := os.UserHomeDir()
 	if errHome == nil {
-		for _, dirName := range []string{"Qoder", "Qoder CN"} {
-			paths = append(paths,
-				filepath.Join(home, "Library", "Application Support", dirName, "SharedClientCache", "cache", "machine_token.json"),
-				filepath.Join(home, ".config", dirName, "SharedClientCache", "cache", "machine_token.json"))
-		}
+		paths = append(paths,
+			filepath.Join(home, "Library", "Application Support", client.product, "SharedClientCache", "cache", "machine_token.json"),
+			filepath.Join(home, ".config", client.product, "SharedClientCache", "cache", "machine_token.json"))
 	}
 	return paths
 }

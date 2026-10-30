@@ -53,8 +53,14 @@ type adapter struct {
 	credits core.CreditTable
 	// settings 是原始配置键（设备身份需要读 qoder_desktop_version）。
 	settings atomic.Value // map[string]string
-	// identityCache 是本实例的设备身份缓存（国内/国际各一份）。
-	identityCache machineIdentityCache
+	// localIdentity 是本机官方组件签发的设备身份（每实例解析一次）。
+	//
+	// 缓存必须挂在实例上：国内版与国际版要用不同的 environment 各解析一份，
+	// 包级缓存会让一个进程里的两个区域互相拿到对方的身份。
+	localIdentity struct {
+		once  sync.Once
+		value MachineIdentity
+	}
 }
 
 // Instances 构造 Qoder 的两个区域实例。
@@ -256,10 +262,10 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 	if errNative != nil {
 		return nil, errNative
 	}
-	// 设备身份优先取用户提供的真值（凭证字段 / 全局配置）；没有时读取本机
-	// 官方客户端生成的身份（按区域传 environment）。两者都没有时一个机器头
-	// 都不发——自造/派生值会被上游整条过滤。
-	identity := ResolveIdentity(v.region, native, v.settingsSnapshot(), &v.identityCache)
+	// 设备身份优先取用户提供的真值（凭证字段 → 全局配置），其次取本机官方
+	// 组件签发的身份（见 credential.go）。插件不会自行派生：上游对机器头做
+	// 精确校验，派生值会让可领取活动被整条过滤。都拿不到时不发机器头。
+	identity := ResolveIdentity(native, v.settingsSnapshot(), v.localMachineIdentity())
 	result, errCheckin := Checkin(ctx, native, identity)
 	if errCheckin != nil {
 		return nil, errCheckin
@@ -273,6 +279,16 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 		Message:     result.Message,
 		NotRecorded: result.NotRecorded,
 	}, nil
+}
+
+// localMachineIdentity 返回本机官方组件签发的设备身份；拿不到时为零值。
+//
+// 解析要 spawn 官方组件（约 4 秒），因此每实例只做一次。
+func (v *adapter) localMachineIdentity() MachineIdentity {
+	v.localIdentity.once.Do(func() {
+		v.localIdentity.value = LocalMachineIdentity(v.region)
+	})
+	return v.localIdentity.value
 }
 
 // settingsSnapshot 返回配置键快照。

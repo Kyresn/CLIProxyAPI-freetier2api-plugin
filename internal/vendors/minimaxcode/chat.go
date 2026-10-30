@@ -732,6 +732,9 @@ func signinTimezoneID(cred *Credential) string {
 }
 
 // buildSigninQuery 构建签到、额度与账号信息接口的查询字符串。
+//
+// 线上 URL 与参与签名的 URL 必须逐字节一致，因此这里只产出一份：曾经按
+// 「签名用/线上用」拆成两份，多出来的 op_ticket 让两边永远对不上。
 func buildSigninQuery(cred *Credential, unixMS int64) string {
 	cred.EnsureIdentifiers()
 	width := cred.ScreenWidth
@@ -827,11 +830,10 @@ func buildAgentTarget(cred *Credential, baseURL, path, method, body string, stre
 // buildSigninTarget 构建对 Signin/Quota/UserInfo 端点的签名目标。
 func buildSigninTarget(cred *Credential, baseURL, path, method, body string) Target {
 	unixMS := time.Now().UnixMilli()
-	wireQuery := buildSigninQuery(cred, unixMS)
-
-	// 签名 URL 必须与线上 URL 逐字节一致。
-	signURL := path + "?" + wireQuery
-	wireURL := baseURL + path + "?" + wireQuery
+	// 签名与线上共用同一个 query，只在 host 部分不同（YY 哈希覆盖原始 query）。
+	query := buildSigninQuery(cred, unixMS)
+	signURL := path + "?" + query
+	wireURL := baseURL + path + "?" + query
 
 	return Target{
 		Method:  method,

@@ -7,6 +7,7 @@ package autoclaw
 // data.reward_points 是本次奖励积分。
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -112,32 +113,37 @@ const UserInfoPath = "/userapi/v1/user-info"
 // TriggerLoginActive 在签到成功后上报一次登录活跃。
 //
 // 参考实现（Agent2API checkin.rs）在签到后 POST user-info，服务端据此发放
-// 每日活跃 / 一次性登录奖励。失败只记日志，绝不改变签到结果。
+// 每日活跃 / 一次性登录奖励。失败只记日志：它是签到之外的附加收益，既不能
+// 改变签到结论，也不值得重试。
 func TriggerLoginActive(ctx context.Context, baseURL string, cred *Credential) {
-	deviceID := cred.DeviceIDValue()
-	if strings.TrimSpace(baseURL) == "" || strings.TrimSpace(deviceID) == "" {
-		return
+	if errActive := reportLoginActive(ctx, baseURL, cred); errActive != nil {
+		logger.Debug("autoclaw: login-active report failed: %v", errActive)
 	}
-	body, errMarshal := json.Marshal(map[string]any{"source_id": "autoclaw", "device_id": deviceID})
+}
+
+func reportLoginActive(ctx context.Context, baseURL string, cred *Credential) error {
+	deviceID := strings.TrimSpace(cred.DeviceIDValue())
+	if strings.TrimSpace(baseURL) == "" || deviceID == "" {
+		return nil
+	}
+	body, errMarshal := json.Marshal(map[string]string{"source_id": "autoclaw", "device_id": deviceID})
 	if errMarshal != nil {
-		logger.Debug("autoclaw login-active encode failed: %v", errMarshal)
-		return
+		return errMarshal
 	}
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+UserInfoPath, strings.NewReader(string(body)))
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+UserInfoPath, bytes.NewReader(body))
 	if errReq != nil {
-		logger.Debug("autoclaw login-active request build failed: %v", errReq)
-		return
+		return errReq
 	}
 	ApplyUserAPIHeaders(req, cred.AccessTokenValue())
 	resp, errDo := hostbridge.Client(ctx, 20*time.Second).Do(req)
 	if errDo != nil {
-		logger.Debug("autoclaw login-active request failed: %v", errDo)
-		return
+		return errDo
 	}
 	defer func() { _ = resp.Body.Close() }()
-	// 排空 body，让宿主连接可复用；上报失败只记日志，不影响签到结果。
+	// 排空响应体再关：宿主桥靠它复用连接。回执内容无关紧要，只看状态码。
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode >= 400 {
-		logger.Debug("autoclaw login-active rejected: HTTP %d", resp.StatusCode)
+		return fmt.Errorf("login-active rejected: HTTP %d", resp.StatusCode)
 	}
+	return nil
 }

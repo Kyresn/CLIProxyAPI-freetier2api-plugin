@@ -18,6 +18,18 @@ import (
 // 通道选择：具备 JWT 时优先走 Start Plan 通道（zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages）；
 // 纯 API Key 账号走 ZCode 官方网关转发通道（zcode.z.ai/api/v1/ultra-zai/anthropic/v1/messages）。
 
+// 供应商配置键。
+const (
+	// configKeyBaseURLCN / configKeyBaseURLGlobal 是实例级上游基地址覆盖，
+	// 与 minimaxcode 的按实例拆键保持一致：同名键会被每个实例各报一次。
+	configKeyBaseURLCN     = "zcodecn_base_url"
+	configKeyBaseURLGlobal = "zcodeglobal_base_url"
+	// configKeyBaseURLLegacy 是拆分前的族级键，仅作兼容读取（不上报）。
+	configKeyBaseURLLegacy = "zcode_base_url"
+	// configKeyClaimMinInterval 是套餐领取节流间隔（族级键，两个实例共读）。
+	configKeyClaimMinInterval = "zcode_claim_min_interval"
+)
+
 // adapter 是 core.Vendor 在 ZCode 上的实现。
 type adapter struct {
 	*core.NativeAdapter[*Credential]
@@ -93,24 +105,38 @@ func newInstance(env core.Env, vendorID, vendorName, region, provider string) *a
 func (v *adapter) AuthMode() string { return "oauth" }
 
 // Configure 解析供应商专属配置。
+//
+// 基地址按实例拆键：两个实例报同一个键会让宿主配置表单出现两条同名项。
+// 旧族级键 configKeyBaseURLLegacy 两个实例都读，升级后行为不变。
 func (v *adapter) Configure(_ core.Settings, raw map[string]string) {
-	// 实例级键优先；族级键保留为旧配置的兼容回退。
-	v.baseURL = core.FirstNonEmpty(
-		strings.TrimSpace(raw[v.vendorID+"_base_url"]),
-		strings.TrimSpace(raw["zcode_base_url"]),
-	)
-	intervalText := core.FirstNonEmpty(
-		strings.TrimSpace(raw[v.vendorID+"_claim_min_interval"]),
-		strings.TrimSpace(raw["zcode_claim_min_interval"]),
-	)
-	if interval, errParse := time.ParseDuration(intervalText); errParse == nil && interval >= 0 {
+	v.baseURL = strings.TrimSpace(core.FirstNonEmpty(raw[v.baseURLKey()], raw[configKeyBaseURLLegacy]))
+	if interval, errParse := time.ParseDuration(strings.TrimSpace(raw[configKeyClaimMinInterval])); errParse == nil && interval >= 0 {
 		v.claims.setInterval(interval)
 	}
 }
 
-// Match 判断一份凭证是否属于本实例。
-func (v *adapter) Match(fileName, provider string, raw map[string]any) bool {
-	return LooksLikeCredential(raw, fileName, provider, v.region)
+// baseURLKey 返回本实例的上游基地址覆盖键。
+func (v *adapter) baseURLKey() string {
+	if v.vendorID == VendorIDCN {
+		return configKeyBaseURLCN
+	}
+	return configKeyBaseURLGlobal
+}
+
+// Match 判断一份凭证是否属于本实例（归属规则见 LooksLikeCredential）。
+func (v *adapter) Match(fileName, _ string, raw map[string]any) bool {
+	return LooksLikeCredential(raw, fileName, v.region)
+}
+
+// LegacyIDs 声明拆分前的旧 supplier ID。
+//
+// 拆分前只有国际版（provider 恒为 zai），因此旧前缀 zcode 只对应国际版：
+// 用户在 disabled_models / 模型别名里写的 zcode:<模型> 继续落到本实例。
+func (v *adapter) LegacyIDs() []string {
+	if v.vendorID != VendorIDGlobal {
+		return nil
+	}
+	return []string{VendorID}
 }
 
 // ---- 模型 ----
@@ -205,7 +231,7 @@ func (v *adapter) Quota(ctx context.Context, cred *core.Credential) (*pluginapi.
 
 // LoginStart 发起一次登录（本实例固定的国内 / 国际 provider）。
 func (v *adapter) LoginStart(ctx context.Context, _ map[string]any) (*pluginapi.AuthLoginStartResponse, error) {
-	return LoginStart(ctx, v.Env.Logins, v.vendorID, v.provider)
+	return LoginStart(ctx, v.Env.Logins, v.vendorID, v.region, v.provider)
 }
 
 // LoginPoll 轮询一次登录状态。
@@ -213,15 +239,21 @@ func (v *adapter) LoginPoll(ctx context.Context, state string) (*pluginapi.AuthL
 	return LoginPoll(ctx, v.Env.Logins, state)
 }
 
-// LegacyVendorIDs 让旧 `zcode:*` 配置继续命中两个新实例。
-func (v *adapter) LegacyVendorIDs() []string { return []string{VendorID} }
-
 // ConfigFields 声明 zcode 专属配置。
+//
+// 领取节流是族级语义（两个实例读同一个键），只由一个实例上报，否则宿主
+// 配置表单会出现同名重复项。
 func (v *adapter) ConfigFields() []pluginapi.ConfigField {
-	return []pluginapi.ConfigField{
-		{Name: v.vendorID + "_base_url", Type: pluginapi.ConfigFieldTypeString, Description: "本实例上游基地址覆盖（旧键 zcode_base_url 仍兼容）。"},
-		{Name: v.vendorID + "_claim_min_interval", Type: pluginapi.ConfigFieldTypeString, Description: "本实例两次套餐领取之间的最小间隔（Go 时长，如 15s；0 表示不节流）。"},
+	fields := []pluginapi.ConfigField{
+		{Name: v.baseURLKey(), Type: pluginapi.ConfigFieldTypeString, Description: "上游基地址覆盖（仅对话通道，OAuth 固定直连 zcode.z.ai）。"},
 	}
+	if v.vendorID == VendorIDGlobal {
+		fields = append(fields, pluginapi.ConfigField{
+			Name: configKeyClaimMinInterval, Type: pluginapi.ConfigFieldTypeString,
+			Description: "两次套餐领取之间的最小间隔（Go 时长，如 15s；0 表示不节流）。",
+		})
+	}
+	return fields
 }
 
 // 编译期断言：适配器实际具备的供应商能力。
@@ -231,9 +263,9 @@ var (
 	_ core.Configurable         = (*adapter)(nil)
 	_ core.ConfigFieldsProvider = (*adapter)(nil)
 	_ core.LoginProvider        = (*adapter)(nil)
-	_ core.VendorAliasProvider  = (*adapter)(nil)
 	_ core.QuotaProvider        = (*adapter)(nil)
 	_ core.Refresher            = (*adapter)(nil)
 	_ core.ActivityProbe        = (*adapter)(nil)
 	_ core.PlanClaimer          = (*adapter)(nil)
+	_ core.LegacyIDReporter     = (*adapter)(nil)
 )

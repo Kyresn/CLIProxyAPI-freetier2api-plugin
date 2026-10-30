@@ -34,7 +34,10 @@ const (
 	ProviderZai = "zai"
 )
 
-// NormalizeRegion 归一化区域标识；未知值返回空串（由调用方回落默认值）。
+// NormalizeRegion 归一化区域标识；未知值返回空串（调用方按缺省处理）。
+//
+// 只认本插件实际写出的两个值：中文别名不进来，避免把用户随手填的
+// region 文本当成归属证据——归属判定宁可退回国际版缺省。
 func NormalizeRegion(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case RegionCN:
@@ -45,7 +48,7 @@ func NormalizeRegion(value string) string {
 	return ""
 }
 
-// NormalizeProvider 归一化登录 provider；未知值返回空串。
+// NormalizeProvider 归一化登录 provider；未知值返回空串（调用方须报错）。
 func NormalizeProvider(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case ProviderBigmodel:
@@ -56,13 +59,19 @@ func NormalizeProvider(value string) string {
 	return ""
 }
 
-// RegionForProvider 返回 provider 对应的区域。
-func RegionForProvider(provider string) string {
-	if NormalizeProvider(provider) == ProviderBigmodel {
-		return RegionCN
+// VendorIDFor 返回区域对应的实例 ID。
+func VendorIDFor(region string) string {
+	if NormalizeRegion(region) == RegionCN {
+		return VendorIDCN
 	}
-	return RegionGlobal
+	return VendorIDGlobal
 }
+
+// legacyProviderKey 是凭证里登录 provider 的旧键（早期版本写 "provider"）。
+//
+// 读取时兼容，写入时清掉：同一份文件里留两个来源不同的值，会让排障时看到
+// 互相矛盾的 provider。
+const legacyProviderKey = "provider"
 
 // Credential 是归一化后的 ZCode 账号凭证。
 type Credential struct {
@@ -140,7 +149,7 @@ func ParseCredential(raw []byte) (*Credential, error) {
 		Label:    core.GetString(m, "label"),
 		AuthMode: core.GetString(m, "auth_mode"),
 		Region:   NormalizeRegion(core.GetString(m, "region")),
-		Provider: NormalizeProvider(core.FirstNonEmpty(core.GetString(m, "login_provider"), core.GetString(m, "provider"))),
+		Provider: NormalizeProvider(core.FirstNonEmpty(core.GetString(m, "login_provider"), core.GetString(m, legacyProviderKey))),
 	}
 
 	c.Profile = parseProfile(m)
@@ -246,6 +255,7 @@ func MergeStorageJSON(original []byte, updated *Credential) ([]byte, error) {
 			m["region"] = updated.Region
 		}
 		if updated.Provider != "" {
+			delete(m, legacyProviderKey)
 			m["login_provider"] = updated.Provider
 		}
 		if updated.Profile.DeviceMID != "" {
@@ -261,74 +271,60 @@ func MergeStorageJSON(original []byte, updated *Credential) ([]byte, error) {
 	}, setFields)
 }
 
-// VendorIDForRegion 返回区域对应的实例标识。
-func VendorIDForRegion(region string) string {
-	if NormalizeRegion(region) == RegionCN {
-		return VendorIDCN
-	}
-	return VendorIDGlobal
-}
-
-// LooksLikeCredential 判断文件或数据是否属于本实例。
-//
-// 先做家族级证据判定（vendor / 文件名 / 凭证特征），再按 region 决定归属：
-// 显式 vendor=zcodecn|zcodeglobal 直接比对；旧 vendor=zcode 或文件名
-// zcode-* 按 region 归属，缺 region 默认国际版。
+// LooksLikeCredential 判断一份凭证是否属于本 ZCode 区域实例。
 //
 // **必须偏严**：宿主会把所有非内建格式的凭证依次喂给插件，误吞别家的会让
 // 宿主用本插件的结构覆盖对方账号。因此只在有明确归属证据时才认领。
-func LooksLikeCredential(raw map[string]any, fileName, provider, region string) bool {
-	_ = provider
-	declared := strings.ToLower(strings.TrimSpace(core.GetString(raw, "vendor")))
-	if declared != "" {
-		switch declared {
-		case VendorID, VendorIDCN, VendorIDGlobal:
-		default:
-			return false
-		}
+//
+// 归属分两步：先定家族（显式 vendor / 文件名前缀 / 内容特征），再按
+// region 字段 > 文件名前缀定实例；两者都缺时归国际版——拆分前只有国际版，
+// 存量 zcode-*.json 必须继续由它认领。
+func LooksLikeCredential(raw map[string]any, fileName, targetRegion string) bool {
+	// 1. 显式 vendor 字段优先：同族其它实例直接否决，别家也一律不认领；
+	//    旧 ID（vendor=zcode）不是否决项，继续往下按 region 判定实例。
+	if decided, claimed := core.VendorFieldVerdict(raw, VendorIDFor(targetRegion), VendorID); decided {
+		return claimed
 	}
 
-	baseName := strings.ToLower(strings.TrimSpace(fileName))
-	hasFamilyEvidence := declared != "" || core.FileNameMatchesConvention(fileName, VendorID, VendorIDCN, VendorIDGlobal)
-	if !hasFamilyEvidence {
-		// 带 ZCode 专有痕迹：档案键或 auth_mode 标记。
-		if _, ok := raw["profile"]; ok {
-			if core.GetString(raw, "device_mid") != "" || core.GetString(raw, "jwt_token") != "" {
-				hasFamilyEvidence = true
-			}
-		}
-		// 同时带 jwt_token 与 api_key（本插件 ZCode 的双凭证形态）。
-		if !hasFamilyEvidence && core.GetString(raw, "jwt_token") != "" && core.GetString(raw, "api_key") != "" {
-			hasFamilyEvidence = true
-		}
-		// 智谱/Z.AI API Key 形态（xxx.xxx）+ 文件名含 zcode/zai
-		key := core.FirstNonEmpty(core.GetString(raw, "api_key"), core.GetString(raw, "apiKey"))
-		if !hasFamilyEvidence && key != "" && strings.Count(key, ".") == 1 &&
-			(strings.Contains(baseName, "zcode") || strings.Contains(baseName, "zai")) {
-			hasFamilyEvidence = true
-		}
-	}
-	if !hasFamilyEvidence {
+	// 2. 属主证据：显式旧 vendor，或文件名前缀 / 本插件 ZCode 凭证特有的
+	//    内容特征（这几个键不会出现在其它供应商的凭证里）。
+	if strings.TrimSpace(core.GetString(raw, "vendor")) == "" &&
+		!core.FileNameMatchesConvention(fileName, VendorID, VendorIDCN, VendorIDGlobal) &&
+		!hasZCodeFingerprint(raw, fileName) {
 		return false
 	}
 
-	if declared == VendorIDCN || declared == VendorIDGlobal {
-		return declared == VendorIDForRegion(region)
+	// 3. 实例归属。
+	if region := NormalizeRegion(core.GetString(raw, "region")); region != "" {
+		return region == targetRegion
 	}
+	switch {
+	case core.FileNameMatchesConvention(fileName, VendorIDCN):
+		return targetRegion == RegionCN
+	case core.FileNameMatchesConvention(fileName, VendorIDGlobal):
+		return targetRegion == RegionGlobal
+	}
+	return targetRegion == RegionGlobal
+}
 
-	credRegion := NormalizeRegion(core.GetString(raw, "region"))
-	if credRegion == "" {
-		switch {
-		case core.FileNameMatchesConvention(fileName, VendorIDCN):
-			credRegion = RegionCN
-		case core.FileNameMatchesConvention(fileName, VendorIDGlobal):
-			credRegion = RegionGlobal
-		default:
-			// 旧凭证（vendor=zcode / 无标记）默认国际版，保持原有行为。
-			credRegion = RegionGlobal
+// hasZCodeFingerprint 报告凭证内容里是否有 ZCode 专属痕迹。
+//
+// profile（设备档案）+ device_mid / jwt_token、以及「jwt_token + api_key」
+// 双凭证形态都只有本插件的 ZCode 凭证会带，单凭内容即可定性。
+func hasZCodeFingerprint(raw map[string]any, fileName string) bool {
+	if _, ok := raw["profile"]; ok {
+		if core.GetString(raw, "device_mid") != "" || core.GetString(raw, "jwt_token") != "" {
+			return true
 		}
 	}
-	return credRegion == NormalizeRegion(region)
+	if core.GetString(raw, "jwt_token") != "" && core.GetString(raw, "api_key") != "" {
+		return true
+	}
+	// 智谱 / Z.AI 的 API Key 形态（xxx.xxx）本身不是归属证据——任何供应商的
+	// api_key 都可能是这个形状，所以要配上 zcode / zai 文件名才算数。
+	key := core.FirstNonEmpty(core.GetString(raw, "api_key"), core.GetString(raw, "apiKey"))
+	return key != "" && strings.Count(key, ".") == 1 &&
+		core.FileNameMatchesConvention(fileName, VendorID, VendorIDCN, VendorIDGlobal, "zai")
 }
 
 // fileNameFor 生成 ZCode 凭证文件名（沿用插件的 <vendor>-<标识>.json 约定）。

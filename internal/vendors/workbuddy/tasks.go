@@ -2544,12 +2544,11 @@ func (c *Client) DailyCheckin(cred *Credential) (*CheckinResult, error) {
 			StreakAlt int64  `json:"streak_days"`
 			Message   string `json:"message"`
 		}
+		// 领取已经成功：回执结构变了只丢明细（积分 / 连签），不能把一次
+		// 真实到账的签到报成失败，否则用户会重复点、历史里也记成 error。
 		if len(data) > 0 {
 			if errUnmarshal := json.Unmarshal(data, &payload); errUnmarshal != nil {
-				// 领取已发生（code=0 且无失败文案）：响应结构变化不能把
-				// 已到账的签到记成失败，只丢失展示用的积分/连登数字。
-				logger.Error("workbuddy checkin result decode failed (side effect already applied): %v", errUnmarshal)
-				return &CheckinResult{Message: "签到成功（上游响应结构未识别）"}, nil
+				logger.Debug("workbuddy: 签到回执解析失败，按成功处理: %v", errUnmarshal)
 			}
 		}
 		return &CheckinResult{

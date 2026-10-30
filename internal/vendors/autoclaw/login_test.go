@@ -2,19 +2,16 @@ package autoclaw
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"freetier2api-plugin/cpasdk/pluginabi"
 	"freetier2api-plugin/cpasdk/pluginapi"
 	"freetier2api-plugin/internal/core"
-	"freetier2api-plugin/internal/hostbridge"
+	"freetier2api-plugin/internal/hostbridge/hostbridgetest"
 )
 
 func TestNormalizePhone(t *testing.T) {
@@ -157,7 +154,7 @@ func TestParseOAuthCallbackAcceptsLoopbackAliases(t *testing.T) {
 }
 
 func TestOAuthCaptchaConfigParsesEnvelope(t *testing.T) {
-	useLoopbackHost(t)
+	hostbridgetest.UseLoopbackHost(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != OAuthCaptchaConfigPath {
 			t.Errorf("path = %q, want %q", r.URL.Path, OAuthCaptchaConfigPath)
@@ -180,7 +177,7 @@ func TestOAuthCaptchaConfigParsesEnvelope(t *testing.T) {
 }
 
 func TestOAuthCaptchaConfigSurfacesUpstreamCode(t *testing.T) {
-	useLoopbackHost(t)
+	hostbridgetest.UseLoopbackHost(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"code":630014,"msg":"Verification failed","data":null}`))
 	}))
@@ -204,7 +201,7 @@ func TestLoginStartRequiresCaptcha(t *testing.T) {
 }
 
 func TestLoginStartRequestsOAuthURLAndRegistersSession(t *testing.T) {
-	useLoopbackHost(t)
+	hostbridgetest.UseLoopbackHost(t)
 	var gotPath string
 	var gotBody map[string]any
 	var gotHeaders http.Header
@@ -308,7 +305,7 @@ func TestOAuthLoginCapabilitiesAndVariants(t *testing.T) {
 // 这条链：第②跳与第③跳必须用同一个 navigate_uri / device_id，否则 Zai 会以
 // 回调地址不匹配或状态失效拒掉。
 func TestSubmitCallbackExchangesCodeWithSessionNavigateURI(t *testing.T) {
-	useLoopbackHost(t)
+	hostbridgetest.UseLoopbackHost(t)
 	var gotBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != OAuthLoginPathZai {
@@ -425,7 +422,7 @@ func TestLoginCredentialUIDChainCoversCamelCaseUserID(t *testing.T) {
 // TestLoginFileNamesAreStableAndUniqueWithoutJWTToken 锁定登录落盘文件名：
 // 同一账号重登同名（幂等）、不同账号不同名（不互相覆盖），且都不再是固定占位名。
 func TestLoginFileNamesAreStableAndUniqueWithoutJWTToken(t *testing.T) {
-	useLoopbackHost(t)
+	hostbridgetest.UseLoopbackHost(t)
 	userIDs := map[string]string{"first": "8a22f603", "second": "9b33a704"}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -479,70 +476,8 @@ func TestLoginFileNamesAreStableAndUniqueWithoutJWTToken(t *testing.T) {
 // 登录测试辅助：loopback 宿主与会话表
 // ---------------------------------------------------------------------------
 
-// 本文件给登录链路的 HTTP 单测提供 loopback 桩：hostbridge.Client 默认经宿主
-// 出站，测试里换成直连 httptest 的转发器（与 codearts 包的 useLoopbackHost 同款）。
-//
-// 请求/响应都用 map 解析，避免在测试代码里再抄一份宿主的 JSON 字段名；
-// 字段口径见 internal/hostbridge/http.go 的 rpcHostHTTPRequest/Response。
-
-func useLoopbackHost(t *testing.T) {
-	t.Helper()
-	hostbridge.Configure(func(callbackID, method string, payload any) (json.RawMessage, error) {
-		if method != pluginabi.MethodHostHTTPDo {
-			return nil, nil
-		}
-		rawPayload, errMarshal := json.Marshal(payload)
-		if errMarshal != nil {
-			return nil, errMarshal
-		}
-		var req map[string]any
-		if errDecode := json.Unmarshal(rawPayload, &req); errDecode != nil {
-			return nil, errDecode
-		}
-		methodText, _ := req["method"].(string)
-		urlText, _ := req["url"].(string)
-		var bodyReader io.Reader
-		if encoded, okEncoded := req["body"].(string); okEncoded && encoded != "" {
-			body, errBody := base64.StdEncoding.DecodeString(encoded)
-			if errBody != nil {
-				return nil, errBody
-			}
-			bodyReader = strings.NewReader(string(body))
-		}
-		httpReq, errNew := http.NewRequest(methodText, urlText, bodyReader)
-		if errNew != nil {
-			return nil, errNew
-		}
-		if rawHeaders, okHeaders := req["headers"].(map[string]any); okHeaders {
-			for key, rawValues := range rawHeaders {
-				values, _ := rawValues.([]any)
-				for _, rawValue := range values {
-					if value, okValue := rawValue.(string); okValue {
-						httpReq.Header.Add(key, value)
-					}
-				}
-			}
-		}
-		resp, errDo := http.DefaultClient.Do(httpReq)
-		if errDo != nil {
-			return nil, errDo
-		}
-		defer func() { _ = resp.Body.Close() }()
-		body, errRead := io.ReadAll(resp.Body)
-		if errRead != nil {
-			return nil, errRead
-		}
-		wrapped, errWrap := json.Marshal(map[string]any{
-			"status_code": resp.StatusCode,
-			"headers":     resp.Header,
-			"body":        body,
-		})
-		if errWrap != nil {
-			return nil, errWrap
-		}
-		return wrapped, nil
-	})
-}
+// 本文件的 HTTP 单测都经 hostbridge.Client 出站，由
+// hostbridgetest.UseLoopbackHost 换成直连 httptest 的转发器。
 
 // stubLoginSessions 是 core.LoginSessions 的内存实现（单测用）。
 type stubLoginSessions struct {

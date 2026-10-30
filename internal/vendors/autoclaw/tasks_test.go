@@ -2,13 +2,13 @@ package autoclaw
 
 import (
 	"context"
-	"io"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"freetier2api-plugin/internal/core"
+	"freetier2api-plugin/internal/hostbridge/hostbridgetest"
 )
 
 // TestCheckinDetectsNotClaimed 锁住「code=0 但 data.success=false」不算成功。
@@ -16,7 +16,7 @@ import (
 // 上游会用这个形态表达「窗口未开 / 无资格」；旧实现只看 code，会把没领到
 // 报成签到成功并写入 LastDate，当天不再重试。
 func TestCheckinDetectsNotClaimed(t *testing.T) {
-	useLoopbackHost(t)
+	hostbridgetest.UseLoopbackHost(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"code":0,"data":{"success":false,"already_completed":false,"reward_points":0,"task_id":"daily_signin"}}`))
 	}))
@@ -36,7 +36,7 @@ func TestCheckinDetectsNotClaimed(t *testing.T) {
 
 // TestCheckinDetectsRewardPoints 锁住 reward_points > 0 即视为领取成功。
 func TestCheckinDetectsRewardPoints(t *testing.T) {
-	useLoopbackHost(t)
+	hostbridgetest.UseLoopbackHost(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"code":0,"data":{"success":true,"already_completed":false,"reward_points":500,"task_id":"daily_signin"}}`))
 	}))
@@ -53,7 +53,7 @@ func TestCheckinDetectsRewardPoints(t *testing.T) {
 
 // TestCheckinTreatsAuthExpiredCodeAsSessionDead 锁住 400000 也是登录过期。
 func TestCheckinTreatsAuthExpiredCodeAsSessionDead(t *testing.T) {
-	useLoopbackHost(t)
+	hostbridgetest.UseLoopbackHost(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"code":400000,"msg":"login expired"}`))
 	}))
@@ -66,6 +66,27 @@ func TestCheckinTreatsAuthExpiredCodeAsSessionDead(t *testing.T) {
 	failure, okFailure := errCheckin.(*core.Failure)
 	if !okFailure || failure.Kind != core.FailureKindSessionDead {
 		t.Fatalf("应分类为 session_dead: %+v", errCheckin)
+	}
+}
+
+// TestCheckinNonZeroBusinessCodeIsNotClaimed 锁住「非登录失效的业务码」不算失败
+// 也不算成功：返回未领取，让上层记 NotRecorded。
+func TestCheckinNonZeroBusinessCodeIsNotClaimed(t *testing.T) {
+	hostbridgetest.UseLoopbackHost(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":12345,"msg":"task not available"}`))
+	}))
+	defer server.Close()
+
+	result, errCheckin := Checkin(context.Background(), server.URL, &Credential{AccessToken: "tok"})
+	if errCheckin != nil {
+		t.Fatalf("业务码不应变成网络错误: %v", errCheckin)
+	}
+	if result.Claimed || result.Already {
+		t.Fatalf("非零业务码不应算领取成功: %+v", result)
+	}
+	if result.Msg != "task not available" {
+		t.Fatalf("Msg = %q", result.Msg)
 	}
 }
 
@@ -90,44 +111,48 @@ func TestApplyUserAPIHeadersUsesDesktopFingerprint(t *testing.T) {
 	}
 }
 
-// TestCheckinNonZeroBusinessCodeIsNotClaimed 锁住「非登录失效的业务码」不算失败也不
-// 算成功：返回未领取，让上层记 NotRecorded。
-func TestCheckinNonZeroBusinessCodeIsNotClaimed(t *testing.T) {
-	useLoopbackHost(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"code":12345,"msg":"task not available"}`))
-	}))
-	defer server.Close()
-
-	result, errCheckin := Checkin(context.Background(), server.URL, &Credential{AccessToken: "tok"})
-	if errCheckin != nil {
-		t.Fatalf("业务码不应变成网络错误: %v", errCheckin)
-	}
-	if result.Claimed || result.Already {
-		t.Fatalf("非零业务码不应算领取成功: %+v", result)
-	}
-	if result.Msg != "task not available" {
-		t.Fatalf("Msg = %q", result.Msg)
-	}
-}
-
-// TestTriggerLoginActivePostsDeviceID 锁住签到后的登录活跃上报。
-func TestTriggerLoginActivePostsDeviceID(t *testing.T) {
-	useLoopbackHost(t)
-	var gotPath, gotBody string
+// TestTriggerLoginActivePostsDeviceIdentity 锁住登录活跃上报的端点、请求体与鉴权。
+//
+// 服务端按 source_id + device_id 匹配「哪台设备今天登录过」，缺任何一个都会
+// 静默不发奖励，所以这两个字段必须与签到共用同一份设备身份。
+func TestTriggerLoginActivePostsDeviceIdentity(t *testing.T) {
+	hostbridgetest.UseLoopbackHost(t)
+	var gotPath string
+	var gotAuth string
+	var gotBody map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		raw, _ := io.ReadAll(r.Body)
-		gotBody = string(raw)
+		gotAuth = r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		_, _ = w.Write([]byte(`{"code":0}`))
 	}))
 	defer server.Close()
 
 	TriggerLoginActive(context.Background(), server.URL, &Credential{AccessToken: "tok", DeviceID: "dev-1"})
+
 	if gotPath != UserInfoPath {
 		t.Fatalf("path = %q, want %q", gotPath, UserInfoPath)
 	}
-	if !strings.Contains(gotBody, `"source_id":"autoclaw"`) || !strings.Contains(gotBody, `"device_id":"dev-1"`) {
-		t.Fatalf("body = %s", gotBody)
+	if gotAuth != bearer("tok") {
+		t.Fatalf("Authorization = %q", gotAuth)
+	}
+	if gotBody["source_id"] != "autoclaw" || gotBody["device_id"] != "dev-1" {
+		t.Fatalf("body = %v", gotBody)
+	}
+}
+
+// TestTriggerLoginActiveSkipsWithoutDeviceID 锁住缺设备号时直接跳过（不发请求）。
+func TestTriggerLoginActiveSkipsWithoutDeviceID(t *testing.T) {
+	hostbridgetest.UseLoopbackHost(t)
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		_, _ = w.Write([]byte(`{"code":0}`))
+	}))
+	defer server.Close()
+
+	TriggerLoginActive(context.Background(), server.URL, &Credential{AccessToken: "tok"})
+	if called {
+		t.Fatal("没有设备号时不应上报登录活跃")
 	}
 }

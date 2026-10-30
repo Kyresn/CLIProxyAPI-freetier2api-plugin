@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -113,16 +112,18 @@ func (s *Service) checkinAt() string {
 	return strings.TrimSpace(s.deps.Config().AutoCheckinAt)
 }
 
-// parseClockHour 把 HH:MM 解析成小时；分钟部分按整点执行（排程粒度为小时）。
+// parseClockHour 把 HH:MM 转成排程用的整点小时。
+//
+// 排程粒度是整点，分钟部分向上取整而不是丢弃：用户写 10:35 就是希望
+// 10:35 之后才跑（签到窗口常常 10:30 才开），按 10:00 执行会跑空。
+// 23:xx 取整后落到次日 00:00，同样不早于设定时刻。
 func parseClockHour(value string) (int, bool) {
-	parts := strings.Split(strings.TrimSpace(value), ":")
-	if len(parts) != 2 {
+	hour, minute, ok := core.ParseClock(value)
+	if !ok {
 		return 0, false
 	}
-	hour, errHour := strconv.Atoi(strings.TrimSpace(parts[0]))
-	minute, errMinute := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if errHour != nil || errMinute != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
-		return 0, false
+	if minute > 0 {
+		hour = (hour + 1) % 24
 	}
 	return hour, true
 }
