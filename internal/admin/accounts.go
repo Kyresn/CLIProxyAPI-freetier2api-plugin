@@ -624,17 +624,11 @@ func (s *Service) runForAccounts(
 			VendorID: current.Vendor.ID(),
 			Realm:    current.Credential.RegionValue(),
 		}
-		outcome, errAction := action(ctx, current.Vendor, current.Credential)
-		if errAction != nil && isAuthExpired(errAction) {
-			// 凭证过期（如 CodeArts 的 STS security token）是**可续期**的：先保活
-			// 刷新一次再重试，否则一键签到会一直报「token has expired」，用户只能
-			// 自己去点 Token 续期。
-			if refreshed := s.refreshedCredential(ctx, callbackID, quotaJob{
-				entry: current.Entry, vendor: current.Vendor, credential: current.Credential,
-			}); refreshed != nil {
-				outcome, errAction = action(ctx, current.Vendor, refreshed)
-			}
-		}
+		outcome, errAction := runWithAuthRetry(current.Credential, func() *core.Credential {
+			return s.refreshedCredential(ctx, callbackID, current.Entry, current.Vendor)
+		}, func(credential *core.Credential) (accountActionOutcome, error) {
+			return action(ctx, current.Vendor, credential)
+		})
 		if errAction != nil {
 			result.OK = false
 			result.Message = errAction.Error()
@@ -646,4 +640,27 @@ func (s *Service) runForAccounts(
 		return result
 	})
 	return append(results, jobResults...)
+}
+
+// runWithAuthRetry 在动作因凭证过期（401）失败时，刷新一次凭证再重试。
+//
+// CodeArts 的 STS security token 过期是**可续期**的：不刷新就重试，一键签到
+// 会一直报「token has expired」，用户只能自己去点 Token 续期。只认 401——
+// 403 / 参数错误刷新不会变好。
+func runWithAuthRetry(
+	credential *core.Credential,
+	refresh func() *core.Credential,
+	action func(*core.Credential) (accountActionOutcome, error),
+) (accountActionOutcome, error) {
+	outcome, errAction := action(credential)
+	if errAction == nil || !isAuthExpired(errAction) || refresh == nil {
+		return outcome, errAction
+	}
+	refreshed := refresh()
+	if refreshed == nil {
+		// 刷新失败（无 refresh_token / 上游拒绝）：按原错误上报，不要用旧凭证
+		// 再打一次，那只会得到同一个 401 并多一条上游请求。
+		return outcome, errAction
+	}
+	return action(refreshed)
 }

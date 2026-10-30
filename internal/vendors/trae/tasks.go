@@ -216,7 +216,7 @@ func checkinHeadersForUID(cred *Credential, uid string) map[string]string {
 		"X-User-Region":      regionHeader(cred),
 		"X-Device-Id":        deriveCheckinDeviceID(uid),
 		"X-Lgw-Req-Sdk-Type": "3",
-		"Package-Type":       "stable_cn",
+		"Package-Type":       packageTypeHeader(cred),
 		"X-Lscbd-Aid":        "787976",
 		"X-Lscbd-Platform":   "windows",
 		// 参考实现调用时产品信息为空，实际发送的就是字面量 undefined；
@@ -248,6 +248,17 @@ func regionHeader(cred *Credential) string {
 		return "SG"
 	}
 	return "CN"
+}
+
+// packageTypeHeader 返回客户端的 Package-Type：国内谱系 stable_cn，国际谱系 stable。
+//
+// 取值对齐参考实现的抓包结论（Agent2API usage.rs：intl/solo-intl → stable）。
+// 国际版额度接口本身尚未在真机验证通过（该账号 401），此值按参考实现给出。
+func packageTypeHeader(cred *Credential) string {
+	if cred != nil && cred.Region == RegionGlobal {
+		return "stable"
+	}
+	return "stable_cn"
 }
 
 // traeUserID 返回签到设备身份所用的账号 id。
@@ -338,10 +349,6 @@ func jwtIdentity(token string) string {
 func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.QuotaFetchResponse, error) {
 	if cred == nil || cred.AccessToken == "" {
 		return nil, fmt.Errorf("credential missing")
-	}
-	if cfg.QuotaHost == "" || cfg.QuotaPath == "" {
-		// 没有额度端点的区域（理论上不再出现）如实说明，而不是发一个必然 404 的请求。
-		return nil, core.NewPluginError("quota_unsupported", "Trae 当前区域无额度查询接口", http.StatusNotImplemented)
 	}
 
 	payload, errBody := json.Marshal(map[string]any{"require_usage": true, "req_source": 2})

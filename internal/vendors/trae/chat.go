@@ -7,7 +7,7 @@ package trae
 // 两个实例共享同一套协议实现，差异由 Config/profile 描述：
 //   - 国内版（traecn）：raw_chat_function=chat_v3，IDE 版本 3.3.104
 //   - 国际版（traeglobal）：与国内版同协议，仅域名与 client_id 不同；
-//     国际版无签到/额度活动（上游 404），由 tasks.go 区分处理。
+//     国际版无签到活动，额度走独立的 v1 端点（见 tasks.go 的 Config.QuotaPath）。
 
 import (
 	"bufio"

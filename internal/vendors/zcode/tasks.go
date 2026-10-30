@@ -188,25 +188,20 @@ func (v *adapter) fetchQuota(ctx context.Context, cred *Credential) (*pluginapi.
 		// 上游在活动额度生效前不会生成 balances 桶，只回空额度；但授予量已经
 		// 写在 plans[].entitlements 里。用授予明细兜底展示「剩余 / 总额」，
 		// 并注明生效时刻，页面不必等到生效那一刻才有数字。
+		note := "尚未领取体验套餐（Start Plan），领取后才有额度"
 		if metrics, groups, effectiveAt := planGrantQuota(snapshot.plans, snapshot.serverTime); len(metrics) > 0 {
 			response.Summary = append(response.Summary, metrics...)
 			response.Groups = append(response.Groups, groups...)
-			note := "套餐已领取，额度尚未生效"
+			note = "套餐已领取，额度尚未生效"
 			if effectiveAt > 0 {
 				note = "套餐已领取，额度 " + time.Unix(effectiveAt, 0).UTC().Format(time.RFC3339) + " 生效"
 			}
-			response.Summary = append(response.Summary, pluginapi.QuotaMetric{
-				Key: "status", Label: "账号状态", Value: 1, Unit: note,
-			})
-			return response, nil
-		}
-		// 连授予明细都没有：如实区分「没领套餐」与「领了但桶还没生成」。
-		reason := "尚未领取体验套餐（Start Plan），领取后才有额度"
-		if len(activePlans(snapshot.plans, snapshot.serverTime)) > 0 {
-			reason = "套餐已领取，额度桶尚未生效"
+		} else if len(activePlans(snapshot.plans, snapshot.serverTime)) > 0 {
+			// 有套餐但没有可解析的授予明细：领了，桶还没生成。
+			note = "套餐已领取，额度桶尚未生效"
 		}
 		response.Summary = append(response.Summary, pluginapi.QuotaMetric{
-			Key: "status", Label: "账号状态", Value: 1, Unit: reason,
+			Key: "status", Label: "账号状态", Value: 1, Unit: note,
 		})
 	}
 	return response, nil
@@ -639,18 +634,23 @@ func (v *adapter) fetchPlanSnapshot(ctx context.Context, cred *Credential) planS
 
 	// 投放有两条通道：billing/preview（计费通道）与 marketing/touch（营销通道）。
 	// 国内版实测活动只出现在营销通道，只看计费通道会把「有活动可领」误判成
-	// 「已领取全部套餐」——按钮因此一直是灰的。两条都查再合并。
+	// 「已领取全部套餐」——按钮因此一直是灰的。
+	//
+	// 只有计费通道拿不到投放时才查营销通道：正常情况下额度刷新仍是 balance +
+	// preview 两次请求，不给营销端点增加无关流量。
 	offered, errPreview := previewOfferedPlans(ctx, cred)
-	marketing, errMarketing := queryMarketingTouch(ctx, cred)
-	switch {
-	case errPreview != nil && errMarketing != nil:
-		// 两条都失败才是真的查不到；单边失败仍可能拿到投放。
-		snapshot.errPreview = errPreview
-		return snapshot
-	case errPreview != nil:
-		logger.Info("zcode billing/preview 失败，改用营销投放: %v", errPreview)
-	case errMarketing != nil:
-		logger.Info("zcode marketing/touch 失败: %v", errMarketing)
+	var marketing []core.PlanInfo
+	if errPreview != nil || len(offered) == 0 {
+		var errMarketing error
+		marketing, errMarketing = queryMarketingTouch(ctx, cred)
+		if errMarketing != nil {
+			logger.Info("zcode marketing/touch 失败: %v", errMarketing)
+		}
+		if errPreview != nil && len(marketing) == 0 {
+			// 两条都拿不到投放：保留 preview 的失败原因，页面才不会误显示「已领取」。
+			snapshot.errPreview = errPreview
+			return snapshot
+		}
 	}
 	snapshot.offered = mergeOfferedPlans(offered, marketing)
 	return snapshot
@@ -684,12 +684,7 @@ func mergeOfferedPlans(primary, extra []core.PlanInfo) []core.PlanInfo {
 			merged = append(merged, plan)
 		}
 	}
-	sort.SliceStable(merged, func(i, j int) bool {
-		if merged[i].Priority != merged[j].Priority {
-			return merged[i].Priority > merged[j].Priority
-		}
-		return merged[i].PlanID < merged[j].PlanID
-	})
+	sortPlansByPriority(merged)
 	return merged
 }
 
@@ -707,38 +702,29 @@ func planGrantQuota(plans []map[string]any, serverTime int64) ([]pluginapi.Quota
 	var total float64
 	effectiveAt := int64(0)
 	for _, plan := range activePlans(plans, serverTime) {
-		entitlements, _ := plan["entitlements"].([]any)
-		for _, item := range entitlements {
-			entry, okEntry := item.(map[string]any)
-			if !okEntry {
+		// 授予量走 parsePlanGrants（与领取弹窗同一口径），生效时刻单独取：
+		// PlanGrant 不带时间字段，且只有「尚未生效」的授予需要提示。
+		planEffective := pendingEffectiveAt(plan, serverTime)
+		if planEffective > 0 && (effectiveAt == 0 || planEffective < effectiveAt) {
+			effectiveAt = planEffective
+		}
+		for _, grant := range parsePlanGrants(plan) {
+			if grant.Model == "" || grant.Units <= 0 {
 				continue
 			}
-			if meter := core.RawStringField(entry, "meter"); meter != "" && meter != "model_usage" {
-				continue
-			}
-			if unit := core.RawStringField(entry, "unit_type"); unit != "" && unit != "token" {
-				continue
-			}
-			units := floatField(entry, "grant_units")
-			if units <= 0 {
-				continue
-			}
-			key := core.FirstNonEmpty(core.RawStringField(entry, "entitlement_id"), core.RawStringField(entry, "show_name"))
-			if key == "" || seen[key] {
+			// 同一份授予可能出现在多个套餐条目里：按模型 + 授予量去重。
+			key := grant.Model + "|" + formatTokens(grant.Units)
+			if seen[key] {
 				continue
 			}
 			seen[key] = true
-			total += units
-			name := core.FirstNonEmpty(core.RawStringField(entry, "show_name"), key)
-			description := "活动额度 " + formatTokens(units) + " tokens"
-			if effective := core.GetUnixSeconds(entry, "effective_at"); effective > 0 && serverTime > 0 && effective > serverTime {
-				if effectiveAt == 0 || effective < effectiveAt {
-					effectiveAt = effective
-				}
-				description += "，" + time.Unix(effective, 0).UTC().Format(time.RFC3339) + " 生效"
+			total += grant.Units
+			description := "活动额度 " + formatTokens(grant.Units) + " tokens"
+			if planEffective > 0 {
+				description += "，" + time.Unix(planEffective, 0).UTC().Format(time.RFC3339) + " 生效"
 			}
 			group.Buckets = append(group.Buckets, pluginapi.QuotaBucket{
-				Window:            name,
+				Window:            grant.Model,
 				RemainingFraction: 1,
 				Description:       description,
 			})
@@ -752,6 +738,26 @@ func planGrantQuota(plans []map[string]any, serverTime int64) ([]pluginapi.Quota
 		{Key: "total", Label: "总量", Value: total, Unit: "tokens"},
 	}
 	return metrics, []pluginapi.QuotaGroup{group}, effectiveAt
+}
+
+// pendingEffectiveAt 返回套餐里最早一个「尚未生效」的授予时刻（Unix 秒）；没有则 0。
+func pendingEffectiveAt(plan map[string]any, serverTime int64) int64 {
+	earliest := int64(0)
+	entitlements, _ := plan["entitlements"].([]any)
+	for _, item := range entitlements {
+		entry, okEntry := item.(map[string]any)
+		if !okEntry {
+			continue
+		}
+		effective := core.GetUnixSeconds(entry, "effective_at")
+		if effective <= 0 || serverTime <= 0 || effective <= serverTime {
+			continue
+		}
+		if earliest == 0 || effective < earliest {
+			earliest = effective
+		}
+	}
+	return earliest
 }
 
 // planRows 取 balance 响应里的 data.plans。
@@ -840,13 +846,21 @@ func normalizePlans(rows []map[string]any) []core.PlanInfo {
 		seen[plan.PlanID] = true
 		plans = append(plans, *plan)
 	}
+	sortPlansByPriority(plans)
+	return plans
+}
+
+// sortPlansByPriority 按优先级降序、plan_id 升序排序。
+//
+// 两条投放通道（billing/preview 与 marketing/touch）共用同一套顺序约定，
+// 否则合并后的列表会随上游返回顺序抖动。
+func sortPlansByPriority(plans []core.PlanInfo) {
 	sort.SliceStable(plans, func(i, j int) bool {
 		if plans[i].Priority != plans[j].Priority {
 			return plans[i].Priority > plans[j].Priority
 		}
 		return plans[i].PlanID < plans[j].PlanID
 	})
-	return plans
 }
 
 // ProbeActivity 只读探测账号当前可见的活动投放，不执行领取。
