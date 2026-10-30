@@ -124,6 +124,7 @@ func TestMetricFloatAcceptsString(t *testing.T) {
 		t.Fatalf("core.FloatFromAny(nil) = %v", got)
 	}
 }
+
 // TestClassifySnapErrors 锁住 snap 网关错误的分类：正文原因要保留，STS 过期
 // 必须归成可续期的凭证错误（状态 401），宿主的保活重试才会触发。
 func TestClassifySnapErrors(t *testing.T) {
