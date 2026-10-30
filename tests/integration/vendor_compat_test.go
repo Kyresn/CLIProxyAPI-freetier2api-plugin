@@ -34,7 +34,8 @@ func TestVendorRegistryCompatibility(t *testing.T) {
 		{"traeglobal", "Trae 国际版", "global"},
 		{"workbuddycn", "WorkBuddy 国内版", "cn"},
 		{"workbuddyglobal", "WorkBuddy 国际版", "global"},
-		{"zcode", "ZCode", "global"},
+		{"zcodecn", "ZCode 国内版", "cn"},
+		{"zcodeglobal", "ZCode 国际版", "global"},
 	}
 	vendors := testApp.Registry().Vendors()
 	if len(vendors) != len(want) {
@@ -87,7 +88,8 @@ func TestVendorCapabilities(t *testing.T) {
 		"traeglobal":        {credits: true, login: true, refresh: true, quota: true, checkin: true, merge: true, configure: true},
 		"workbuddycn":       {credits: true, login: true, refresh: true, quota: true, checkin: true, tasks: true, models: true, merge: true, configure: true, console: true},
 		"workbuddyglobal":   {credits: true, login: true, refresh: true, quota: true, checkin: true, tasks: true, models: true, merge: true, configure: true, console: true},
-		"zcode":             {login: true, refresh: true, quota: true, merge: true, configure: true, authMode: "oauth"},
+		"zcodecn":           {login: true, refresh: true, quota: true, merge: true, configure: true, authMode: "oauth"},
+		"zcodeglobal":       {login: true, refresh: true, quota: true, merge: true, configure: true, authMode: "oauth"},
 	}
 	for _, vendor := range testApp.Registry().Vendors() {
 		expected, okCase := cases[vendor.ID()]

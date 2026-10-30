@@ -35,7 +35,7 @@ func TestLooksLikeCredential(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := LooksLikeCredential(tc.raw, tc.fileName, tc.provider)
+			got := LooksLikeCredential(tc.raw, tc.fileName, tc.provider, RegionGlobal)
 			if got != tc.want {
 				t.Fatalf("want %v, got %v", tc.want, got)
 			}
@@ -192,7 +192,7 @@ func TestLooksLikeCredentialRejectsForeign(t *testing.T) {
 		{map[string]any{"api_key": "sk-abcdef"}, "random.json", false},
 	}
 	for _, tc := range cases {
-		if got := LooksLikeCredential(tc.raw, tc.fileName, ""); got != tc.want {
+		if got := LooksLikeCredential(tc.raw, tc.fileName, "", RegionGlobal); got != tc.want {
 			t.Fatalf("LooksLikeCredential(%v, %s) = %v, want %v", tc.raw, tc.fileName, got, tc.want)
 		}
 	}
@@ -252,5 +252,55 @@ func TestAccountKeyPrioritizesIdentity(t *testing.T) {
 	}
 	if (&Credential{}).AccountKey() != "" {
 		t.Fatal("credential without any identity must yield empty key")
+	}
+}
+
+// TestRegionProviderNormalization 锁住国内外登录标识的归一化。
+func TestRegionProviderNormalization(t *testing.T) {
+	cases := []struct {
+		raw      string
+		region   string
+		provider string
+	}{
+		{"cn", RegionCN, ""},
+		{"global", RegionGlobal, ""},
+		{"bigmodel", "", ProviderBigmodel},
+		{"zai", "", ProviderZai},
+		{"", "", ""},
+		{"unknown", "", ""},
+	}
+	for _, testCase := range cases {
+		if got := NormalizeRegion(testCase.raw); got != testCase.region {
+			t.Errorf("NormalizeRegion(%q) = %q, want %q", testCase.raw, got, testCase.region)
+		}
+		if got := NormalizeProvider(testCase.raw); got != testCase.provider {
+			t.Errorf("NormalizeProvider(%q) = %q, want %q", testCase.raw, got, testCase.provider)
+		}
+	}
+	if RegionForProvider(ProviderBigmodel) != RegionCN || RegionForProvider(ProviderZai) != RegionGlobal {
+		t.Fatal("RegionForProvider 映射错误")
+	}
+}
+
+// TestCredentialRoundTripKeepsRegionProvider 锁住 region/provider 落盘。
+func TestCredentialRoundTripKeepsRegionProvider(t *testing.T) {
+	cred := &Credential{
+		Vendor:   VendorID,
+		JWTToken: "jwt-token",
+		AuthMode: "oauth",
+		Region:   RegionCN,
+		Provider: ProviderBigmodel,
+		Profile:  NewDeviceProfile(),
+	}
+	storage, errJSON := cred.StorageJSON()
+	if errJSON != nil {
+		t.Fatalf("StorageJSON: %v", errJSON)
+	}
+	parsed, errParse := ParseCredential(storage)
+	if errParse != nil {
+		t.Fatalf("ParseCredential: %v", errParse)
+	}
+	if parsed.Region != RegionCN || parsed.Provider != ProviderBigmodel {
+		t.Fatalf("region/provider = %q/%q, want cn/bigmodel", parsed.Region, parsed.Provider)
 	}
 }

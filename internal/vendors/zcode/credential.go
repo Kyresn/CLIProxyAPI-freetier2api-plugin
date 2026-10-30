@@ -22,6 +22,48 @@ import (
 //
 // OAuth 登录一次拿到两者（JWT 直接下发，API Key 由 access_token 兑换）。
 
+// ZCode 的区域与登录 provider。
+const (
+	// RegionCN 是国内版（智谱开放平台 bigmodel 登录）。
+	RegionCN = "cn"
+	// RegionGlobal 是国际版（z.ai 登录）。
+	RegionGlobal = "global"
+	// ProviderBigmodel 是智谱开放平台登录 provider。
+	ProviderBigmodel = "bigmodel"
+	// ProviderZai 是 z.ai 国际版登录 provider。
+	ProviderZai = "zai"
+)
+
+// NormalizeRegion 归一化区域标识；未知值返回空串（由调用方回落默认值）。
+func NormalizeRegion(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case RegionCN:
+		return RegionCN
+	case RegionGlobal:
+		return RegionGlobal
+	}
+	return ""
+}
+
+// NormalizeProvider 归一化登录 provider；未知值返回空串。
+func NormalizeProvider(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case ProviderBigmodel:
+		return ProviderBigmodel
+	case ProviderZai:
+		return ProviderZai
+	}
+	return ""
+}
+
+// RegionForProvider 返回 provider 对应的区域。
+func RegionForProvider(provider string) string {
+	if NormalizeProvider(provider) == ProviderBigmodel {
+		return RegionCN
+	}
+	return RegionGlobal
+}
+
 // Credential 是归一化后的 ZCode 账号凭证。
 type Credential struct {
 	Vendor   string        `json:"vendor,omitempty"`
@@ -32,6 +74,13 @@ type Credential struct {
 	Profile  DeviceProfile `json:"profile,omitempty"`
 	Label    string        `json:"label,omitempty"`
 	AuthMode string        `json:"auth_mode,omitempty"` // oauth / apikey
+	// Region 是账号所属区域：cn（bigmodel 登录）/ global（z.ai 登录）。
+	//
+	// 两种登录都产出 zcode.z.ai 的 Coding Plan JWT，对话通道相同；region
+	// 只用于账号展示与登录入口区分。
+	Region string `json:"region,omitempty"`
+	// Provider 是 OAuth 登录 provider：bigmodel（国内）/ zai（国际）。
+	Provider string `json:"login_provider,omitempty"`
 }
 
 // UsesPlanChannel 报告本凭证是否具备 Start Plan（JWT）通道能力。
@@ -90,6 +139,8 @@ func ParseCredential(raw []byte) (*Credential, error) {
 		UserID:   core.GetString(m, "user_id"),
 		Label:    core.GetString(m, "label"),
 		AuthMode: core.GetString(m, "auth_mode"),
+		Region:   NormalizeRegion(core.GetString(m, "region")),
+		Provider: NormalizeProvider(core.FirstNonEmpty(core.GetString(m, "login_provider"), core.GetString(m, "provider"))),
 	}
 
 	c.Profile = parseProfile(m)
@@ -132,7 +183,7 @@ func parseProfile(m map[string]any) DeviceProfile {
 func (c *Credential) StorageJSON() ([]byte, error) {
 	m := map[string]any{
 		"type":      "freetier",
-		"vendor":    VendorID,
+		"vendor":    core.FirstNonEmpty(c.Vendor, VendorID),
 		"auth_mode": core.FirstNonEmpty(c.AuthMode, "apikey"),
 	}
 	if c.APIKey != "" {
@@ -150,6 +201,12 @@ func (c *Credential) StorageJSON() ([]byte, error) {
 	if c.Label != "" {
 		m["label"] = c.Label
 	}
+	if c.Region != "" {
+		m["region"] = c.Region
+	}
+	if c.Provider != "" {
+		m["login_provider"] = c.Provider
+	}
 	// 档案恒定落盘：device_mid 变了上游即视为新设备，必须持久化。
 	m["profile"] = c.Profile
 	return json.MarshalIndent(m, "", "  ")
@@ -166,7 +223,7 @@ func MergeStorageJSON(original []byte, updated *Credential) ([]byte, error) {
 	// 旧凭证缺了它们，合并结果也必须补上。
 	setFields := func(m map[string]any) {
 		m["type"] = "freetier"
-		m["vendor"] = VendorID
+		m["vendor"] = core.FirstNonEmpty(updated.Vendor, VendorID)
 		if updated.APIKey != "" {
 			m["api_key"] = updated.APIKey
 		}
@@ -185,6 +242,12 @@ func MergeStorageJSON(original []byte, updated *Credential) ([]byte, error) {
 		if updated.Label != "" {
 			m["label"] = updated.Label
 		}
+		if updated.Region != "" {
+			m["region"] = updated.Region
+		}
+		if updated.Provider != "" {
+			m["login_provider"] = updated.Provider
+		}
 		if updated.Profile.DeviceMID != "" {
 			m["profile"] = updated.Profile
 		}
@@ -198,48 +261,79 @@ func MergeStorageJSON(original []byte, updated *Credential) ([]byte, error) {
 	}, setFields)
 }
 
-// LooksLikeCredential 判断文件或数据是否属于 ZCode。
+// VendorIDForRegion 返回区域对应的实例标识。
+func VendorIDForRegion(region string) string {
+	if NormalizeRegion(region) == RegionCN {
+		return VendorIDCN
+	}
+	return VendorIDGlobal
+}
+
+// LooksLikeCredential 判断文件或数据是否属于本实例。
+//
+// 先做家族级证据判定（vendor / 文件名 / 凭证特征），再按 region 决定归属：
+// 显式 vendor=zcodecn|zcodeglobal 直接比对；旧 vendor=zcode 或文件名
+// zcode-* 按 region 归属，缺 region 默认国际版。
 //
 // **必须偏严**：宿主会把所有非内建格式的凭证依次喂给插件，误吞别家的会让
 // 宿主用本插件的结构覆盖对方账号。因此只在有明确归属证据时才认领。
-func LooksLikeCredential(raw map[string]any, fileName, provider string) bool {
-	// 显式 vendor 字段优先：声明了别家就绝不认领。
-	if decided, claimed := core.VendorFieldVerdict(raw, VendorID); decided {
-		return claimed
-	}
-
-	// 文件名前缀匹配（约定集中由 core 维护）。
-	baseName := strings.ToLower(strings.TrimSpace(fileName))
-	if core.FileNameMatchesConvention(fileName, VendorID) {
-		return true
-	}
-
-	// 3) 带 ZCode 专有痕迹：档案键或 auth_mode 标记。
-	//    这两个键都不会出现在其它供应商的凭证里，是强特征。
-	if _, ok := raw["profile"]; ok {
-		if core.GetString(raw, "device_mid") != "" || core.GetString(raw, "jwt_token") != "" {
-			return true
+func LooksLikeCredential(raw map[string]any, fileName, provider, region string) bool {
+	_ = provider
+	declared := strings.ToLower(strings.TrimSpace(core.GetString(raw, "vendor")))
+	if declared != "" {
+		switch declared {
+		case VendorID, VendorIDCN, VendorIDGlobal:
+		default:
+			return false
 		}
 	}
 
-	// 4) 同时带 jwt_token 与 api_key（本插件 ZCode 的双凭证形态）。
-	if core.GetString(raw, "jwt_token") != "" && core.GetString(raw, "api_key") != "" {
-		return true
+	baseName := strings.ToLower(strings.TrimSpace(fileName))
+	hasFamilyEvidence := declared != "" || core.FileNameMatchesConvention(fileName, VendorID, VendorIDCN, VendorIDGlobal)
+	if !hasFamilyEvidence {
+		// 带 ZCode 专有痕迹：档案键或 auth_mode 标记。
+		if _, ok := raw["profile"]; ok {
+			if core.GetString(raw, "device_mid") != "" || core.GetString(raw, "jwt_token") != "" {
+				hasFamilyEvidence = true
+			}
+		}
+		// 同时带 jwt_token 与 api_key（本插件 ZCode 的双凭证形态）。
+		if !hasFamilyEvidence && core.GetString(raw, "jwt_token") != "" && core.GetString(raw, "api_key") != "" {
+			hasFamilyEvidence = true
+		}
+		// 智谱/Z.AI API Key 形态（xxx.xxx）+ 文件名含 zcode/zai
+		key := core.FirstNonEmpty(core.GetString(raw, "api_key"), core.GetString(raw, "apiKey"))
+		if !hasFamilyEvidence && key != "" && strings.Count(key, ".") == 1 &&
+			(strings.Contains(baseName, "zcode") || strings.Contains(baseName, "zai")) {
+			hasFamilyEvidence = true
+		}
+	}
+	if !hasFamilyEvidence {
+		return false
 	}
 
-	// 5) 智谱/Z.AI API Key 形态（xxx.xxx）+ 文件名含 zcode/zai
-	key := core.FirstNonEmpty(core.GetString(raw, "api_key"), core.GetString(raw, "apiKey"))
-	if key != "" && strings.Count(key, ".") == 1 &&
-		(strings.Contains(baseName, "zcode") || strings.Contains(baseName, "zai")) {
-		return true
+	if declared == VendorIDCN || declared == VendorIDGlobal {
+		return declared == VendorIDForRegion(region)
 	}
 
-	return false
+	credRegion := NormalizeRegion(core.GetString(raw, "region"))
+	if credRegion == "" {
+		switch {
+		case core.FileNameMatchesConvention(fileName, VendorIDCN):
+			credRegion = RegionCN
+		case core.FileNameMatchesConvention(fileName, VendorIDGlobal):
+			credRegion = RegionGlobal
+		default:
+			// 旧凭证（vendor=zcode / 无标记）默认国际版，保持原有行为。
+			credRegion = RegionGlobal
+		}
+	}
+	return credRegion == NormalizeRegion(region)
 }
 
 // fileNameFor 生成 ZCode 凭证文件名（沿用插件的 <vendor>-<标识>.json 约定）。
-func fileNameFor(identifier string) string {
-	return core.FileNameFor(VendorID, identifier)
+func fileNameFor(vendorID, identifier string) string {
+	return core.FileNameFor(core.FirstNonEmpty(vendorID, VendorID), identifier)
 }
 
 // UserIDFromJWT 从 JWT payload 解 user_id（user_id 优先，sub 兜底）。

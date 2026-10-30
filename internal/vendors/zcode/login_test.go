@@ -1,6 +1,7 @@
 package zcode
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -70,4 +71,26 @@ func countSubstring(s, sub string) int {
 		}
 	}
 	return count
+}
+
+// TestPickLoginAccessTokenPrefersProviderBlock 锁住按 provider 取 token 分支。
+func TestPickLoginAccessTokenPrefersProviderBlock(t *testing.T) {
+	if got := pickLoginAccessToken(ProviderBigmodel, "bm", "", "zai", "", ""); got != "bm" {
+		t.Fatalf("bigmodel token = %q, want bm", got)
+	}
+	if got := pickLoginAccessToken(ProviderZai, "bm", "", "zai", "", ""); got != "zai" {
+		t.Fatalf("zai token = %q, want zai", got)
+	}
+	// 对应分支缺失时回退另一分支/顶层，避免整轮登录失败。
+	if got := pickLoginAccessToken(ProviderBigmodel, "", "", "zai", "", ""); got != "zai" {
+		t.Fatalf("fallback token = %q, want zai", got)
+	}
+}
+
+// TestLoginStartRejectsUnknownProvider 锁住未知 provider 不被静默改成国际版。
+func TestLoginStartRejectsUnknownProvider(t *testing.T) {
+	_, errStart := LoginStart(context.Background(), nil, VendorIDCN, "unknown")
+	if errStart == nil {
+		t.Fatal("未知 provider 应报错")
+	}
 }
