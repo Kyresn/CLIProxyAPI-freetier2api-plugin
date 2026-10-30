@@ -658,9 +658,11 @@ func TestConsoleScanTableScrollsInsideWrapper(t *testing.T) {
 	if !strings.Contains(page, "#accounts, #scans .table-scroll") {
 		t.Fatal("narrow-screen overflow must be carried by .table-scroll, not .card")
 	}
-	// 渲染扫描表时必须真的建出这层容器。
-	if !strings.Contains(page, `"table-scroll"`) {
-		t.Fatal("renderScans must wrap the table in a .table-scroll element")
+	// 滚动容器的直接子节点必须是表格本身，而不是整张卡片。
+	// 只断言 "table-scroll" 字样出现过是不够的——把 card（含 <h2>）包进滚动容器
+	// 同样会出现这个字符串，而那正是这段要防的回归，所以断言必须锁住嵌套关系。
+	if !strings.Contains(page, `el("div", null, "table-scroll")).appendChild(table)`) {
+		t.Fatal("the .table-scroll wrapper must directly contain the table, not the whole card")
 	}
 	// 账号表自带横滚，不应被一并套进新容器（否则两处规则重叠、边框错位）。
 	if strings.Contains(page, "#accounts .table-scroll") {
