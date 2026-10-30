@@ -182,14 +182,9 @@ func (s *Service) effectiveAutoCheckin() bool {
 
 // effectiveSettings 返回页面设置与配置合并后的可读视图。
 func (s *Service) effectiveSettings() map[string]any {
-	state := s.deps.State()
-	checkinAt := state.AutoCheckinAt
-	if checkinAt == "" {
-		checkinAt = s.deps.Config().AutoCheckinAt
-	}
 	return map[string]any{
 		"auto_checkin":    s.effectiveAutoCheckin(),
-		"auto_checkin_at": checkinAt,
+		"auto_checkin_at": s.checkinAt(),
 		"auto_tasks":      s.effectiveAutoTasks(),
 		"schedule":        s.effectiveSchedule(),
 		"task_specs":      s.catalog.Specs(),

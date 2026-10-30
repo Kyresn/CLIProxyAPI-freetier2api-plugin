@@ -63,7 +63,6 @@ var (
 	promptTooLongMarkers = []string{
 		`"code":11115`, `"code": 11115`, `"code":"11115"`, "prompt is too long",
 	}
-	alreadyCheckinMarkers = []string{"已签到", "already"}
 )
 
 const (
@@ -289,22 +288,6 @@ func IsWAFBlocked(status int, body string) bool {
 // IsModelRateLimit 判断响应体是否表示模型级限流（6004）。
 func IsModelRateLimit(body string) bool {
 	return modelRateLimitRe.MatchString(body)
-}
-
-// IsAlreadyCheckin 判断错误是否为「今天已签到」。
-//
-// 签到接口对重复签到返回业务错误而非成功，调用方需要把它当成幂等成功处理。
-func IsAlreadyCheckin(err error) bool {
-	if err == nil {
-		return false
-	}
-	lower := strings.ToLower(err.Error())
-	for _, marker := range alreadyCheckinMarkers {
-		if strings.Contains(lower, strings.ToLower(marker)) {
-			return true
-		}
-	}
-	return false
 }
 
 // ParseRateReset 从错误正文里解析上游给出的重置时刻。

@@ -215,13 +215,11 @@ func checkinCredential() *Credential {
 
 // TestSigninQuerySendsTimezoneID 锁住签到接口必填的 timezone_id。
 func TestSigninQuerySendsTimezoneID(t *testing.T) {
-	query := buildSigninQuery(checkinCredential(), 1000, false)
+	query := buildSigninQuery(checkinCredential(), 1000)
 	if !strings.Contains(query, "timezone_id=") {
 		t.Fatalf("query 缺少 timezone_id: %s", query)
 	}
-	if strings.Contains(query, "op_ticket=") {
-		t.Fatalf("线上 query 不应包含 op_ticket: %s", query)
-	}
+
 }
 
 // TestCheckinFailsOnBusinessErrorEnvelope 锁住 HTTP 200 + base_resp 非零必须失败。

@@ -89,11 +89,11 @@ func campaignsBody(campaigns ...string) string {
 // 值本身无所谓：这里只驱动请求头组装与判定。上游对真值做精确校验，但那
 // 属于服务端行为，单测只验证「有身份就发、没身份就不发」的契约。
 func testIdentity() MachineIdentity {
-	return ResolveIdentity(nil, map[string]string{
+	return ResolveIdentity(RegionGlobal, nil, map[string]string{
 		"qoder_machine_token": "token-from-official-component",
 		"qoder_machine_type":  "type-from-official-component",
 		"qoder_machine_code":  "code-from-official-component",
-	})
+	}, nil)
 }
 
 // TestCheckinGlobalSendsNativeMachineHeaders 覆盖：拿到真身份后，活动查询、

@@ -47,7 +47,7 @@ func Checkin(ctx context.Context, cred *Credential, cfg Config) (*CheckinResult,
 		return nil, fmt.Errorf("trae 国际版无签到活动")
 	}
 
-	headers, errHeaders := checkinHeaders(cred, cfg)
+	headers, errHeaders := checkinHeaders(cred)
 	if errHeaders != nil {
 		return nil, errHeaders
 	}
@@ -137,8 +137,8 @@ func claimCheckinCredits(ctx context.Context, cfg Config, headers map[string]str
 				return errPost
 			}
 			lastErr = errPost
-			if attempt < 3 {
-				time.Sleep(time.Second)
+			if attempt < 3 && !core.SleepContext(ctx, time.Second) {
+				return ctx.Err()
 			}
 			continue
 		}
@@ -184,7 +184,7 @@ func postCheckin(ctx context.Context, url string, headers map[string]string) ([]
 // 参考实现（trae-mate）实测：签到端点接受的是**约 20 个头的官方客户端形态**，
 // 只发 Authorization + 设备头会被上游拒绝或归到不同设备配额。设备身份必须
 // 基于账号 uid 确定性派生：同一账号稳定、不同账号互不共享（上游按设备限流）。
-func checkinHeaders(cred *Credential, _ Config) (map[string]string, error) {
+func checkinHeaders(cred *Credential) (map[string]string, error) {
 	uid := traeUserID(cred)
 	if uid == "" {
 		return nil, fmt.Errorf("trae: 缺少账号 uid，无法派生签到设备身份")
@@ -196,7 +196,7 @@ func checkinHeaders(cred *Credential, _ Config) (map[string]string, error) {
 //
 // 签到必须拒绝共享默认设备身份（上游按设备限流）；额度只读接口没有这个
 // 约束，用一个稳定的账号级标识即可。
-func quotaHeaders(cred *Credential, _ Config) map[string]string {
+func quotaHeaders(cred *Credential) map[string]string {
 	if uid := traeUserID(cred); uid != "" {
 		return checkinHeadersForUID(cred, uid)
 	}
@@ -234,8 +234,8 @@ func checkinHeadersForUID(cred *Credential, uid string) map[string]string {
 const (
 	// traeCheckinUserAgent / traeCheckinMarketClientID 是官方 TRAE SOLO CN
 	// 客户端在签到请求里使用的固定 UA 与市场客户端标识。
-	traeCheckinUserAgent       = "VSCode 1.107.1 (TRAE SOLO CN)"
-	traeCheckinMarketClientID  = "VSCode 1.107.1"
+	traeCheckinUserAgent      = "VSCode 1.107.1 (TRAE SOLO CN)"
+	traeCheckinMarketClientID = "VSCode 1.107.1"
 )
 
 // traeUserID 返回签到设备身份所用的账号 id。
@@ -340,7 +340,7 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 	if errReq != nil {
 		return nil, errReq
 	}
-	for key, value := range quotaHeaders(cred, cfg) {
+	for key, value := range quotaHeaders(cred) {
 		req.Header.Set(key, value)
 	}
 
@@ -374,10 +374,19 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 	}
 
 	var total, used float64
+	unlimited := false
 	for _, pack := range result.UserEntitlementPackList {
+		// product_type=0 是功能开关包，没有积分额度。
+		if pack.EntitlementBaseInfo.ProductType != 2 {
+			continue
+		}
 		limit, okLimit := flexFloat(pack.EntitlementBaseInfo.Quota.CreditsLimit)
-		// 只统计有正额度的积分包：0 / 负数表示无额度或非积分包。
-		if !okLimit || limit <= 0 {
+		if !okLimit {
+			continue
+		}
+		if limit < 0 {
+			// 负数额度表示「无限」，与「没有额度」是两种语义，不能当 0。
+			unlimited = true
 			continue
 		}
 		total += limit
@@ -400,6 +409,9 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 			{Key: "credit_total", Label: "总额度", Value: total, Unit: "credits"},
 			{Key: "credit_used", Label: "已用积分", Value: used, Unit: "credits"},
 		},
+	}
+	if unlimited {
+		response.Summary[0] = pluginapi.QuotaMetric{Key: "credit_remain", Label: "剩余积分", Value: -1, Unit: "unlimited"}
 	}
 	return response, nil
 }

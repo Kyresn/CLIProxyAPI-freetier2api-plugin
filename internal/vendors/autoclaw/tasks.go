@@ -17,6 +17,7 @@ import (
 
 	"freetier2api-plugin/internal/core"
 	"freetier2api-plugin/internal/hostbridge"
+	"freetier2api-plugin/internal/logger"
 )
 
 // checkinTaskID 是每日签到任务的任务 ID。
@@ -119,16 +120,24 @@ func TriggerLoginActive(ctx context.Context, baseURL string, cred *Credential) {
 	}
 	body, errMarshal := json.Marshal(map[string]any{"source_id": "autoclaw", "device_id": deviceID})
 	if errMarshal != nil {
+		logger.Debug("autoclaw login-active encode failed: %v", errMarshal)
 		return
 	}
 	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+UserInfoPath, strings.NewReader(string(body)))
 	if errReq != nil {
+		logger.Debug("autoclaw login-active request build failed: %v", errReq)
 		return
 	}
 	ApplyUserAPIHeaders(req, cred.AccessTokenValue())
 	resp, errDo := hostbridge.Client(ctx, 20*time.Second).Do(req)
 	if errDo != nil {
+		logger.Debug("autoclaw login-active request failed: %v", errDo)
 		return
 	}
-	_ = resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
+	// 排空 body，让宿主连接可复用；上报失败只记日志，不影响签到结果。
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode >= 400 {
+		logger.Debug("autoclaw login-active rejected: HTTP %d", resp.StatusCode)
+	}
 }

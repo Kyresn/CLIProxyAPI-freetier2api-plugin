@@ -53,6 +53,8 @@ type adapter struct {
 	credits core.CreditTable
 	// settings 是原始配置键（设备身份需要读 qoder_desktop_version）。
 	settings atomic.Value // map[string]string
+	// identityCache 是本实例的设备身份缓存（国内/国际各一份）。
+	identityCache machineIdentityCache
 }
 
 // Instances 构造 Qoder 的两个区域实例。
@@ -254,10 +256,10 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 	if errNative != nil {
 		return nil, errNative
 	}
-	// 设备身份只取自「用户提供的真身份」（凭证字段或全局配置）。插件不会
-	// 自行派生：上游对机器头做精确校验，派生值会让可领取活动被整条过滤，
-	// 详见 identity.go。没有真身份时签到时一个机器头都不发。
-	identity := ResolveIdentity(native, v.settingsSnapshot())
+	// 设备身份优先取用户提供的真值（凭证字段 / 全局配置）；没有时读取本机
+	// 官方客户端生成的身份（按区域传 environment）。两者都没有时一个机器头
+	// 都不发——自造/派生值会被上游整条过滤。
+	identity := ResolveIdentity(v.region, native, v.settingsSnapshot(), &v.identityCache)
 	result, errCheckin := Checkin(ctx, native, identity)
 	if errCheckin != nil {
 		return nil, errCheckin

@@ -14,8 +14,6 @@ func disableLocalMachineIdentity(t *testing.T) {
 	t.Helper()
 	t.Setenv("QODER_RUNTIME_INFO", filepath.Join(t.TempDir(), "missing-runtime-info"))
 	t.Setenv("QODER_MACHINE_TOKEN_PATH", filepath.Join(t.TempDir(), "missing-machine-token.json"))
-	resetLocalMachineIdentityCache()
-	t.Cleanup(resetLocalMachineIdentityCache)
 }
 
 // 本文件锁住设备身份的解析规则。
@@ -40,7 +38,7 @@ func TestResolveIdentityUsesProvidedValues(t *testing.T) {
 	const machineType = "001b505914466e907f"
 	cred := &Credential{MachineToken: token, MachineType: machineType, MachineCode: "c075415b76a3900977"}
 
-	identity := ResolveIdentity(cred, nil)
+	identity := ResolveIdentity(RegionGlobal, cred, nil, nil)
 	if identity.Token != token || identity.Type != machineType {
 		t.Errorf("应原样透传凭证里的身份: %+v", identity)
 	}
@@ -54,11 +52,11 @@ func TestResolveIdentityUsesProvidedValues(t *testing.T) {
 
 // TestResolveIdentityFallsBackToConfig 覆盖：凭证没带身份时用全局配置。
 func TestResolveIdentityFallsBackToConfig(t *testing.T) {
-	identity := ResolveIdentity(nil, map[string]string{
+	identity := ResolveIdentity(RegionGlobal, nil, map[string]string{
 		"qoder_machine_token": "cfg-token",
 		"qoder_machine_type":  "cfg-type",
 		"qoder_machine_code":  "cfg-code",
-	})
+	}, nil)
 	if identity.Token != "cfg-token" || identity.Type != "cfg-type" || identity.Code != "cfg-code" {
 		t.Errorf("应从配置读身份: %+v", identity)
 	}
@@ -68,9 +66,10 @@ func TestResolveIdentityFallsBackToConfig(t *testing.T) {
 //
 // 凭证里的身份属于「这台设备登录的那个账号」，比全局配置更具体。
 func TestResolveIdentityCredentialWinsOverConfig(t *testing.T) {
-	identity := ResolveIdentity(
+	identity := ResolveIdentity(RegionGlobal,
 		&Credential{MachineToken: "cred-token", MachineType: "cred-type"},
 		map[string]string{"qoder_machine_token": "cfg-token", "qoder_machine_type": "cfg-type"},
+		nil,
 	)
 	if identity.Token != "cred-token" || identity.Type != "cred-type" {
 		t.Errorf("凭证级身份应优先: %+v", identity)
@@ -92,7 +91,7 @@ func TestResolveIdentityRefusesHalfIdentity(t *testing.T) {
 		{"token in cred, type in config", &Credential{MachineToken: "tok"}, map[string]string{"qoder_machine_type": ""}},
 	}
 	for _, testCase := range cases {
-		identity := ResolveIdentity(testCase.cred, testCase.raw)
+		identity := ResolveIdentity(RegionGlobal, testCase.cred, testCase.raw, nil)
 		if identity.Native() {
 			t.Errorf("%s: 半套/空身份不应可用: %+v", testCase.name, identity)
 		}
@@ -105,7 +104,7 @@ func TestResolveIdentityRefusesHalfIdentity(t *testing.T) {
 // TestResolveIdentityPairsAcrossSources 覆盖：token 来自凭证、type 来自配置
 // 时仍算成对——两者都真实存在，只是写在不同位置。
 func TestResolveIdentityPairsAcrossSources(t *testing.T) {
-	identity := ResolveIdentity(&Credential{MachineToken: "tok"}, map[string]string{"qoder_machine_type": "ty"})
+	identity := ResolveIdentity(RegionGlobal, &Credential{MachineToken: "tok"}, map[string]string{"qoder_machine_type": "ty"}, nil)
 	if !identity.Native() {
 		t.Errorf("跨来源拼成的完整身份应可用: %+v", identity)
 	}
@@ -117,7 +116,7 @@ func TestResolveIdentityPairsAcrossSources(t *testing.T) {
 // 这条是本文件最重要的约束——派生值会让活动被上游整条过滤。
 func TestResolveIdentityNeverDerives(t *testing.T) {
 	disableLocalMachineIdentity(t)
-	identity := ResolveIdentity(&Credential{Token: "dt-some-account-token"}, map[string]string{})
+	identity := ResolveIdentity(RegionGlobal, &Credential{Token: "dt-some-account-token"}, map[string]string{}, nil)
 	if identity.Native() {
 		t.Errorf("没有用户提供的身份时不得自行生成: %+v", identity)
 	}
@@ -135,10 +134,8 @@ func TestResolveIdentityFallsBackToLocalMachineToken(t *testing.T) {
 	}
 	t.Setenv("QODER_RUNTIME_INFO", filepath.Join(t.TempDir(), "missing-runtime-info"))
 	t.Setenv("QODER_MACHINE_TOKEN_PATH", path)
-	resetLocalMachineIdentityCache()
-	t.Cleanup(resetLocalMachineIdentityCache)
 
-	identity := ResolveIdentity(nil, nil)
+	identity := ResolveIdentity(RegionGlobal, nil, nil, nil)
 	if identity.Token != "local-tok" || identity.Type != "local-type" {
 		t.Errorf("应使用本机官方身份: %+v", identity)
 	}
@@ -161,11 +158,11 @@ func TestParseRuntimeInfoOutput(t *testing.T) {
 
 // TestIdentityDesktopVersionOverride 覆盖：cosy-version 可被配置覆盖。
 func TestIdentityDesktopVersionOverride(t *testing.T) {
-	identity := ResolveIdentity(nil, map[string]string{"qoder_desktop_version": "9.9.9"})
+	identity := ResolveIdentity(RegionGlobal, nil, map[string]string{"qoder_desktop_version": "9.9.9"}, nil)
 	if identity.Version != "9.9.9" {
 		t.Errorf("version = %q, 期望 9.9.9", identity.Version)
 	}
-	if fallback := ResolveIdentity(nil, nil); fallback.Version != DesktopVersion {
+	if fallback := ResolveIdentity(RegionGlobal, nil, nil, nil); fallback.Version != DesktopVersion {
 		t.Errorf("未配置时 version = %q, 期望 %q", fallback.Version, DesktopVersion)
 	}
 }
@@ -194,7 +191,7 @@ func TestNativeRequiresTokenAndType(t *testing.T) {
 // 这是国内版能正常领取的前提——发了派生 token 反而会把活动过滤掉。
 func TestCheckinHeadersOmitMachineWhenUnavailable(t *testing.T) {
 	disableLocalMachineIdentity(t)
-	headers := checkinHeaders("dt-token", ResolveIdentity(nil, nil))
+	headers := checkinHeaders("dt-token", ResolveIdentity(RegionGlobal, nil, nil, nil))
 	for _, key := range []string{"cosy-machinetoken", "cosy-machinetype", "cosy-machinecode", "cosy-machineid"} {
 		if value, okValue := headers[key]; okValue {
 			t.Errorf("无真身份时不应发送 %s = %q", key, value)
@@ -221,5 +218,15 @@ func TestCheckinHeadersSendProvidedMachineIdentity(t *testing.T) {
 	}
 	if headers["cosy-machinecode"] != "cd" {
 		t.Errorf("cosy-machinecode = %q", headers["cosy-machinecode"])
+	}
+}
+
+// TestMachineEnvironmentByRegion 锁住国内/国际 runtime-info environment。
+func TestMachineEnvironmentByRegion(t *testing.T) {
+	if got := machineEnvironment(RegionCN); got != "0" {
+		t.Fatalf("CN environment = %q, want 0", got)
+	}
+	if got := machineEnvironment(RegionGlobal); got != "3" {
+		t.Fatalf("global environment = %q, want 3", got)
 	}
 }

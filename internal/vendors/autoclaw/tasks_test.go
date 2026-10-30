@@ -2,8 +2,10 @@ package autoclaw
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"freetier2api-plugin/internal/core"
@@ -85,5 +87,47 @@ func TestApplyUserAPIHeadersUsesDesktopFingerprint(t *testing.T) {
 	}
 	if got := req.Header.Get("X-Tm"); got != "win" && got != "linux" {
 		t.Errorf("X-Tm = %q, want win/linux", got)
+	}
+}
+
+// TestCheckinNonZeroBusinessCodeIsNotClaimed 锁住「非登录失效的业务码」不算失败也不
+// 算成功：返回未领取，让上层记 NotRecorded。
+func TestCheckinNonZeroBusinessCodeIsNotClaimed(t *testing.T) {
+	useLoopbackHost(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":12345,"msg":"task not available"}`))
+	}))
+	defer server.Close()
+
+	result, errCheckin := Checkin(context.Background(), server.URL, &Credential{AccessToken: "tok"})
+	if errCheckin != nil {
+		t.Fatalf("业务码不应变成网络错误: %v", errCheckin)
+	}
+	if result.Claimed || result.Already {
+		t.Fatalf("非零业务码不应算领取成功: %+v", result)
+	}
+	if result.Msg != "task not available" {
+		t.Fatalf("Msg = %q", result.Msg)
+	}
+}
+
+// TestTriggerLoginActivePostsDeviceID 锁住签到后的登录活跃上报。
+func TestTriggerLoginActivePostsDeviceID(t *testing.T) {
+	useLoopbackHost(t)
+	var gotPath, gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
+		_, _ = w.Write([]byte(`{"code":0}`))
+	}))
+	defer server.Close()
+
+	TriggerLoginActive(context.Background(), server.URL, &Credential{AccessToken: "tok", DeviceID: "dev-1"})
+	if gotPath != UserInfoPath {
+		t.Fatalf("path = %q, want %q", gotPath, UserInfoPath)
+	}
+	if !strings.Contains(gotBody, `"source_id":"autoclaw"`) || !strings.Contains(gotBody, `"device_id":"dev-1"`) {
+		t.Fatalf("body = %s", gotBody)
 	}
 }

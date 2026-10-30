@@ -111,14 +111,13 @@ func Checkin(ctx context.Context, cred *Credential) (*CheckinResult, error) {
 		return nil, errActivity
 	}
 	if activity == nil {
-		return &CheckinResult{Already: true, NotRecorded: true, Message: "未找到每日签到活动"}, nil
+		return &CheckinResult{NotRecorded: true, Message: "未找到每日签到活动"}, nil
 	}
 	if !activity.Claimable {
 		if claimedStatuses[strings.ToUpper(activity.Status)] {
 			return &CheckinResult{Already: true, Message: "今天已领取"}, nil
 		}
 		return &CheckinResult{
-			Already:     true,
 			NotRecorded: true,
 			Message:     fmt.Sprintf("当前不可领取（status=%s）", activity.Status),
 		}, nil
@@ -361,7 +360,6 @@ func claimBenefitTokenFallback(ctx context.Context, cred *Credential, isTokenAcc
 	}
 	if !status.Enabled {
 		return &CheckinResult{
-			Already:     true,
 			NotRecorded: true,
 			Message:     "当前账号未开放每日签到（既不是积分计费账户，也无福利 Token 活动）",
 		}, nil

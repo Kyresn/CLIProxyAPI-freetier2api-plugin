@@ -281,6 +281,17 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 
 func (v *adapter) SupportsCheckin() bool { return true }
 
+// SupportsCheckinFor 报告该账号是否支持「每日签到」。
+//
+// 小浣熊没有每日签到端点：每日积分由服务端自动发放，客户端只有一次性的
+// 桌面端登录奖励。把它登记成签到会让每个账号每天产生一条失败历史。
+func (v *adapter) SupportsCheckinFor(_ *core.Credential) bool { return false }
+
+// CheckinUnsupportedReason 返回不可签到的可读原因。
+func (v *adapter) CheckinUnsupportedReason(_ *core.Credential) string {
+	return "小浣熊没有每日签到；桌面端登录奖励为一次性领取"
+}
+
 // ---- 登录与续期 ----
 
 // LoginStart 发起一次网页授权登录：生成一次性 state 并登记会话，
@@ -408,6 +419,7 @@ var (
 	_ core.Vendor               = (*adapter)(nil)
 	_ core.CallbackSubmitter    = (*adapter)(nil)
 	_ core.CheckinProvider      = (*adapter)(nil)
+	_ core.CheckinCapability    = (*adapter)(nil)
 	_ core.Configurable         = (*adapter)(nil)
 	_ core.ConfigFieldsProvider = (*adapter)(nil)
 	_ core.CreditsProvider      = (*adapter)(nil)
