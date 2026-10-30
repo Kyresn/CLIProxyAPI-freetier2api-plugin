@@ -254,3 +254,53 @@ func TestAccountKeyPrioritizesIdentity(t *testing.T) {
 		t.Fatal("credential without any identity must yield empty key")
 	}
 }
+
+// TestRegionProviderNormalization 锁住国内外登录标识的归一化。
+func TestRegionProviderNormalization(t *testing.T) {
+	cases := []struct {
+		raw      string
+		region   string
+		provider string
+	}{
+		{"bigmodel", RegionCN, ProviderBigmodel},
+		{"cn", RegionCN, ProviderBigmodel},
+		{"zai", RegionGlobal, ProviderZai},
+		{"z.ai", RegionGlobal, ProviderZai},
+		{"", "", ""},
+		{"unknown", "", ""},
+	}
+	for _, testCase := range cases {
+		if got := NormalizeRegion(testCase.raw); got != testCase.region {
+			t.Errorf("NormalizeRegion(%q) = %q, want %q", testCase.raw, got, testCase.region)
+		}
+		if got := NormalizeProvider(testCase.raw); got != testCase.provider {
+			t.Errorf("NormalizeProvider(%q) = %q, want %q", testCase.raw, got, testCase.provider)
+		}
+	}
+	if RegionForProvider(ProviderBigmodel) != RegionCN || RegionForProvider(ProviderZai) != RegionGlobal {
+		t.Fatal("RegionForProvider 映射错误")
+	}
+}
+
+// TestCredentialRoundTripKeepsRegionProvider 锁住 region/provider 落盘。
+func TestCredentialRoundTripKeepsRegionProvider(t *testing.T) {
+	cred := &Credential{
+		Vendor:   VendorID,
+		JWTToken: "jwt-token",
+		AuthMode: "oauth",
+		Region:   RegionCN,
+		Provider: ProviderBigmodel,
+		Profile:  NewDeviceProfile(),
+	}
+	storage, errJSON := cred.StorageJSON()
+	if errJSON != nil {
+		t.Fatalf("StorageJSON: %v", errJSON)
+	}
+	parsed, errParse := ParseCredential(storage)
+	if errParse != nil {
+		t.Fatalf("ParseCredential: %v", errParse)
+	}
+	if parsed.Region != RegionCN || parsed.Provider != ProviderBigmodel {
+		t.Fatalf("region/provider = %q/%q, want cn/bigmodel", parsed.Region, parsed.Provider)
+	}
+}

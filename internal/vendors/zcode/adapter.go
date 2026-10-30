@@ -21,7 +21,13 @@ import (
 // adapter 是 core.Vendor 在 ZCode 上的实现。
 type adapter struct {
 	*core.NativeAdapter[*Credential]
-	baseURL string
+	// vendorID / vendorName 是实例标识（国内版 zcodecn / 国际版 zcodeglobal）。
+	vendorID   string
+	vendorName string
+	// region / provider 固定本实例的登录来源。
+	region   string
+	provider string
+	baseURL  string
 	// claims 是本实例的领取节流器；不共享，多 App 并存时互不影响。
 	claims *claimGate
 	// activations 是本实例的活跃上报去重表（每账号每日一次）。
@@ -30,10 +36,30 @@ type adapter struct {
 	gate *chatGate
 }
 
-// Instances 构造 ZCode 实例。
+// Instances 构造 ZCode 国内 / 国际两个实例。
+//
+// 两者协议与上游通道相同，区别只在登录 provider 与凭证归属：
+//   - 国内版 zcodecn：bigmodel（智谱开放平台）
+//   - 国际版 zcodeglobal：zai（z.ai）
 func Instances(env core.Env) []core.Vendor {
-	return []core.Vendor{&adapter{claims: newClaimGate(), activations: newActivationState(), gate: newChatGate(), NativeAdapter: core.NewNativeAdapter(core.NativeSpec[*Credential]{
-		Meta: core.Meta{VendorID: VendorID, VendorName: VendorName, VendorRegion: "global"},
+	return []core.Vendor{
+		newInstance(env, VendorIDCN, VendorNameCN, RegionCN, ProviderBigmodel),
+		newInstance(env, VendorIDGlobal, VendorNameGlobal, RegionGlobal, ProviderZai),
+	}
+}
+
+func newInstance(env core.Env, vendorID, vendorName, region, provider string) *adapter {
+	instance := &adapter{
+		vendorID:    vendorID,
+		vendorName:  vendorName,
+		region:      region,
+		provider:    provider,
+		claims:      newClaimGate(),
+		activations: newActivationState(),
+		gate:        newChatGate(),
+	}
+	instance.NativeAdapter = core.NewNativeAdapter(core.NativeSpec[*Credential]{
+		Meta: core.Meta{VendorID: vendorID, VendorName: vendorName, VendorRegion: region},
 		Env:  env,
 		Extract: func(c *core.Credential) (*Credential, bool) {
 			native, ok := c.Native.(*Credential)
@@ -44,12 +70,16 @@ func Instances(env core.Env) []core.Vendor {
 			if errParse != nil {
 				return core.CredentialSeed{}, nil, errParse
 			}
+			// 旧凭证（vendor=zcode、无 region）按本实例补齐并迁移到新 ID。
+			native.Region = core.FirstNonEmpty(native.Region, region)
+			native.Provider = core.FirstNonEmpty(native.Provider, provider)
+			native.Vendor = vendorID
 			label := native.Label
 			if label == "" {
 				label = core.FirstNonEmpty(native.Email, "ZCode-"+MaskedKey(native.OutboundToken()))
 			}
 			return core.CredentialSeed{
-				VendorID: VendorID, Region: "global", Label: label,
+				VendorID: vendorID, Region: native.Region, Label: label,
 				FileID: core.FileIDFromFileName(fileName), UID: core.FirstNonEmpty(native.UserID, native.Email),
 				Token: native.APIKey, AuthMode: native.AuthMode,
 			}, native, nil
@@ -57,7 +87,8 @@ func Instances(env core.Env) []core.Vendor {
 		MergeNative: func(original []byte, native *Credential) ([]byte, error) {
 			return MergeStorageJSON(original, native)
 		},
-	})}}
+	})
+	return instance
 }
 
 // AuthMode 返回凭证形态：oauth。
@@ -71,9 +102,36 @@ func (v *adapter) Configure(_ core.Settings, raw map[string]string) {
 	}
 }
 
-// Match 判断一份凭证是否属于本供应商。
+// Match 判断一份凭证是否属于本实例。
+//
+// 新凭证带 vendor=zcodecn / zcodeglobal；旧凭证 vendor=zcode 或文件名
+// zcode-* 时按 region 归属，region 缺失的旧凭证默认归国际版。
 func (v *adapter) Match(fileName, provider string, raw map[string]any) bool {
-	return LooksLikeCredential(raw, fileName, provider)
+	if !LooksLikeCredential(raw, fileName, provider) {
+		return false
+	}
+	declared := strings.ToLower(strings.TrimSpace(core.GetString(raw, "vendor")))
+	switch declared {
+	case v.vendorID:
+		return true
+	case VendorIDCN, VendorIDGlobal:
+		// 明确声明了另一个实例。
+		return false
+	}
+
+	region := NormalizeRegion(core.GetString(raw, "region"))
+	if region == "" {
+		if core.FileNameMatchesConvention(fileName, VendorIDCN) {
+			region = RegionCN
+		} else if core.FileNameMatchesConvention(fileName, VendorIDGlobal) {
+			region = RegionGlobal
+		}
+	}
+	if region == "" {
+		// 旧凭证（vendor=zcode / 无标记）默认国际版，保持原有行为。
+		region = RegionGlobal
+	}
+	return region == v.region
 }
 
 // ---- 模型 ----
@@ -166,9 +224,9 @@ func (v *adapter) Quota(ctx context.Context, cred *core.Credential) (*pluginapi.
 
 // ---- 登录与续期 ----
 
-// LoginStart 发起一次登录。
+// LoginStart 发起一次登录（本实例固定的国内 / 国际 provider）。
 func (v *adapter) LoginStart(ctx context.Context, _ map[string]any) (*pluginapi.AuthLoginStartResponse, error) {
-	return LoginStart(ctx, v.Env.Logins)
+	return LoginStart(ctx, v.Env.Logins, v.vendorID, v.provider)
 }
 
 // LoginPoll 轮询一次登录状态。
