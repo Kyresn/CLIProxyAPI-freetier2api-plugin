@@ -274,9 +274,11 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   .card { padding: 14px 15px; }
   th, td { padding: 7px 8px; }
   /* 账号表与扫描结果表在窄屏改为横向滚动，避免 8 列 nowrap 撑破视口。
+     滚动容器只包表格本身：#accounts 是纯表格容器，扫描结果表由 renderScans()
+     套一层 .table-scroll——加在整张 .card 上会把 <h2> 标题和错误行一起卷进滚动。
      代价：这两张表在该断点下不再吸顶（overflow-x 会让 overflow-y 计算为 auto），
      窄屏本来也没有吸顶价值。 */
-  #accounts, #scans .card { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  #accounts, #scans .table-scroll { overflow-x: auto; }
   #models table { min-width: 820px; }
   .modal-box { padding: 16px; }
 }
@@ -295,9 +297,14 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   /* 输入框独占一行。两处 !important 都是压 HTML 内联样式的：
      inline 的 `flex:1` 会覆盖外部 flex-basis，inline 的 `min-width:320px`
      会让 390px 屏横向溢出。不压这两条，筛选框会被压成一条缝。 */
-  .row > input[type=text], .row > input[type=password], .row > input[type=number] {
+  .row > input[type=text], .row > input[type=password], .row > input[type=number],
+  .row > input[type=tel] {
     flex: 1 1 100% !important; width: 100%; min-width: 0 !important;
   }
+  /* select 嵌在 <label> 里：先让 label 可压缩，select 才跟着收窄，
+     否则 320px 下 #setPromptMode 会以 option 的自然宽度撑破视口。 */
+  .row > label { max-width: 100%; min-width: 0; }
+  .row select { max-width: 100%; min-width: 0; }
   /* 按钮按内容均分，避免多个按钮各占一行显得松散。 */
   .row > button.act { flex: 1 1 auto; min-width: 0; }
   .modal { padding: 12px; }
@@ -305,7 +312,6 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   .logbox { max-height: 320px; padding: 10px 11px; }
   .bar { width: 56px; }
   #models table { min-width: 720px; }
-  #taskSchedule input { max-width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
@@ -2128,7 +2134,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
           row.appendChild(cell);
           table.appendChild(row);
         });
-        card.appendChild(table);
+        card.appendChild(el("div", null, "table-scroll")).appendChild(table);
       }
       host.appendChild(card);
     });
