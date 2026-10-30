@@ -95,6 +95,9 @@ func (r *Registry) ByID(id string) (Vendor, bool) {
 }
 
 // Resolve 按 vendor 字段 -> 文件名前缀 -> 内容嗅探的顺序判定凭证归属。
+//
+// 声明或文件名里出现的是**家族**标识时（拆分前的旧 ID、cn / global 区域
+// 别名），交给各实例自己的 Match 定位；现役 ID 保持「声明即归属」的原语义。
 func (r *Registry) Resolve(fileName, provider string, raw map[string]any) (Vendor, bool) {
 	if r == nil {
 		return nil, false
@@ -102,6 +105,9 @@ func (r *Registry) Resolve(fileName, provider string, raw map[string]any) (Vendo
 	if raw != nil {
 		if rawVendor, okVendor := raw[VendorKey].(string); okVendor {
 			if v, ok := r.ByID(rawVendor); ok {
+				return v, true
+			}
+			if v, ok := r.resolveFamily(rawVendor, fileName, provider, raw); ok {
 				return v, true
 			}
 		}
@@ -112,16 +118,27 @@ func (r *Registry) Resolve(fileName, provider string, raw map[string]any) (Vendo
 		r.mu.RLock()
 		ids := make([]string, len(r.order))
 		copy(ids, r.order)
+		legacyIDs := make([]string, 0, len(r.legacy))
+		for legacyID := range r.legacy {
+			legacyIDs = append(legacyIDs, legacyID)
+		}
 		r.mu.RUnlock()
-		sort.Slice(ids, func(i, j int) bool {
-			if len(ids[i]) != len(ids[j]) {
-				return len(ids[i]) > len(ids[j])
-			}
-			return ids[i] < ids[j]
-		})
+		sortByLengthDesc(ids)
 		for _, id := range ids {
 			if FileNameMatchesConvention(base, id) {
 				return r.byID[id], true
+			}
+		}
+		// 旧 ID 的文件名（zcode-*.json）仍要归到它演变成的实例：这类文件只
+		// 说明家族，落哪个实例见 resolveFamily。缺这段，存量文件会落到内容
+		// 嗅探，被先注册的 apikey 型供应商抢走（线上真实发生过）。
+		sortByLengthDesc(legacyIDs)
+		for _, legacyID := range legacyIDs {
+			if !FileNameMatchesConvention(base, legacyID) {
+				continue
+			}
+			if v, ok := r.resolveFamily(legacyID, fileName, provider, raw); ok {
+				return v, true
 			}
 		}
 	}
@@ -132,6 +149,37 @@ func (r *Registry) Resolve(fileName, provider string, raw map[string]any) (Vendo
 		}
 	}
 	return nil, false
+}
+
+// resolveFamily 把家族标识（拆分前的旧 ID、cn / global 区域别名）落到实例。
+//
+// 先让各实例自己的 Match 按内容判定（旧凭证可能带 region），都不认领时退回
+// 该家族声明的第一个实例——拆分前那种凭证只可能属于这一个，宁可归它也不
+// 让内容嗅探把文件判给别家。
+func (r *Registry) resolveFamily(family, fileName, provider string, raw map[string]any) (Vendor, bool) {
+	ids := r.VendorIDsForPrefix(family)
+	for _, id := range ids {
+		if v, ok := r.ByID(id); ok && v.Match(fileName, provider, raw) {
+			return v, true
+		}
+	}
+	for _, id := range ids {
+		if v, ok := r.ByID(id); ok {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+// sortByLengthDesc 按「长名优先、同长字典序」排序，保证前缀包含关系里
+// 更具体的名字（zcodeglobal）先于短名（zcode）被文件名匹配到。
+func sortByLengthDesc(names []string) {
+	sort.Slice(names, func(i, j int) bool {
+		if len(names[i]) != len(names[j]) {
+			return len(names[i]) > len(names[j])
+		}
+		return names[i] < names[j]
+	})
 }
 
 // ParseCredential 归属并解析一份凭证，同时兜底账号身份。
