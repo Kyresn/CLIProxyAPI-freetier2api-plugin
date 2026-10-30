@@ -66,9 +66,58 @@ func (s *Service) runTaskScheduler(ctx context.Context) {
 					return
 				}
 			}
-			s.runTaskBatch(ctx, kinds)
+			s.runBatchWithCheckinMinute(ctx, kinds)
 		}
 	}
+}
+
+// runBatchWithCheckinMinute 让 auto_checkin_at 的分钟部分真正生效。
+//
+// 排程粒度是整点；用户配置 10:05 时，签到必须等到 10:05 再跑，否则上游
+// 窗口可能还没开。其他任务族仍在整点执行，只有签到单独等待。
+func (s *Service) runBatchWithCheckinMinute(ctx context.Context, kinds []string) {
+	delay := s.checkinMinuteDelay(s.deps.Now())
+	if delay <= 0 {
+		s.runTaskBatch(ctx, kinds)
+		return
+	}
+	others := make([]string, 0, len(kinds))
+	hasCheckin := false
+	for _, kind := range kinds {
+		if kind == core.TaskKindCheckin {
+			hasCheckin = true
+			continue
+		}
+		others = append(others, kind)
+	}
+	if !hasCheckin {
+		s.runTaskBatch(ctx, kinds)
+		return
+	}
+	if len(others) > 0 {
+		s.runTaskBatch(ctx, others)
+	}
+	logger.Debug("checkin scheduled at %s, waiting %s", s.checkinAt(), delay.Round(time.Second))
+	if !core.SleepContext(ctx, delay) {
+		return
+	}
+	s.runTaskBatch(ctx, []string{core.TaskKindCheckin})
+}
+
+// checkinMinuteDelay 返回距离配置签到分钟还要等多久；0 表示无需等待。
+func (s *Service) checkinMinuteDelay(now time.Time) time.Duration {
+	if !s.effectiveAutoCheckin() {
+		return 0
+	}
+	hour, minute, okClock := parseClock(s.checkinAt())
+	if !okClock || minute == 0 || now.Hour() != hour {
+		return 0
+	}
+	target := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
+	if !now.Before(target) {
+		return 0
+	}
+	return target.Sub(now)
 }
 
 // runTaskBatch 并行派发同一时刻的多个任务族。
@@ -115,16 +164,22 @@ func (s *Service) checkinAt() string {
 
 // parseClockHour 把 HH:MM 解析成小时；分钟部分按整点执行（排程粒度为小时）。
 func parseClockHour(value string) (int, bool) {
+	hour, _, okClock := parseClock(value)
+	return hour, okClock
+}
+
+// parseClock 解析 HH:MM，返回小时与分钟。
+func parseClock(value string) (int, int, bool) {
 	parts := strings.Split(strings.TrimSpace(value), ":")
 	if len(parts) != 2 {
-		return 0, false
+		return 0, 0, false
 	}
 	hour, errHour := strconv.Atoi(strings.TrimSpace(parts[0]))
 	minute, errMinute := strconv.Atoi(strings.TrimSpace(parts[1]))
 	if errHour != nil || errMinute != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
-		return 0, false
+		return 0, 0, false
 	}
-	return hour, true
+	return hour, minute, true
 }
 
 // pokeScheduler 唤醒调度循环重新计算下次执行时刻。

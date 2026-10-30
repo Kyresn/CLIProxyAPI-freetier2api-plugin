@@ -2,7 +2,6 @@ package raccoon
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,47 +10,10 @@ import (
 	"freetier2api-plugin/internal/hostbridge"
 )
 
-// useLoopbackHost 把宿主 HTTP 桥换成直连 httptest 的转发器。
+// useLoopbackHost 把宿主 HTTP 桥接到真实网络。
 func useLoopbackHost(t *testing.T) {
 	t.Helper()
-	hostbridge.Configure(func(callbackID, method string, payload any) (json.RawMessage, error) {
-		raw, errMarshal := json.Marshal(payload)
-		if errMarshal != nil {
-			return nil, errMarshal
-		}
-		var req struct {
-			Method  string              `json:"method"`
-			URL     string              `json:"url"`
-			Headers map[string][]string `json:"headers"`
-			Body    []byte              `json:"body"`
-		}
-		if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
-			return nil, errUnmarshal
-		}
-		httpReq, errNew := http.NewRequest(req.Method, req.URL, nil)
-		if errNew != nil {
-			return nil, errNew
-		}
-		for key, values := range req.Headers {
-			for _, value := range values {
-				httpReq.Header.Add(key, value)
-			}
-		}
-		resp, errDo := http.DefaultClient.Do(httpReq)
-		if errDo != nil {
-			return nil, errDo
-		}
-		defer func() { _ = resp.Body.Close() }()
-		body, errRead := io.ReadAll(resp.Body)
-		if errRead != nil {
-			return nil, errRead
-		}
-		return json.Marshal(map[string]any{
-			"StatusCode": resp.StatusCode,
-			"Headers":    resp.Header,
-			"Body":       body,
-		})
-	})
+	hostbridge.ConfigureLoopback()
 	t.Cleanup(func() { hostbridge.Configure(nil) })
 }
 

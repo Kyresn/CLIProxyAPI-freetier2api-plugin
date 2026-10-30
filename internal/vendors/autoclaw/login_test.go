@@ -2,16 +2,13 @@ package autoclaw
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"freetier2api-plugin/cpasdk/pluginabi"
 	"freetier2api-plugin/cpasdk/pluginapi"
 	"freetier2api-plugin/internal/core"
 	"freetier2api-plugin/internal/hostbridge"
@@ -487,61 +484,8 @@ func TestLoginFileNamesAreStableAndUniqueWithoutJWTToken(t *testing.T) {
 
 func useLoopbackHost(t *testing.T) {
 	t.Helper()
-	hostbridge.Configure(func(callbackID, method string, payload any) (json.RawMessage, error) {
-		if method != pluginabi.MethodHostHTTPDo {
-			return nil, nil
-		}
-		rawPayload, errMarshal := json.Marshal(payload)
-		if errMarshal != nil {
-			return nil, errMarshal
-		}
-		var req map[string]any
-		if errDecode := json.Unmarshal(rawPayload, &req); errDecode != nil {
-			return nil, errDecode
-		}
-		methodText, _ := req["method"].(string)
-		urlText, _ := req["url"].(string)
-		var bodyReader io.Reader
-		if encoded, okEncoded := req["body"].(string); okEncoded && encoded != "" {
-			body, errBody := base64.StdEncoding.DecodeString(encoded)
-			if errBody != nil {
-				return nil, errBody
-			}
-			bodyReader = strings.NewReader(string(body))
-		}
-		httpReq, errNew := http.NewRequest(methodText, urlText, bodyReader)
-		if errNew != nil {
-			return nil, errNew
-		}
-		if rawHeaders, okHeaders := req["headers"].(map[string]any); okHeaders {
-			for key, rawValues := range rawHeaders {
-				values, _ := rawValues.([]any)
-				for _, rawValue := range values {
-					if value, okValue := rawValue.(string); okValue {
-						httpReq.Header.Add(key, value)
-					}
-				}
-			}
-		}
-		resp, errDo := http.DefaultClient.Do(httpReq)
-		if errDo != nil {
-			return nil, errDo
-		}
-		defer func() { _ = resp.Body.Close() }()
-		body, errRead := io.ReadAll(resp.Body)
-		if errRead != nil {
-			return nil, errRead
-		}
-		wrapped, errWrap := json.Marshal(map[string]any{
-			"status_code": resp.StatusCode,
-			"headers":     resp.Header,
-			"body":        body,
-		})
-		if errWrap != nil {
-			return nil, errWrap
-		}
-		return wrapped, nil
-	})
+	hostbridge.ConfigureLoopback()
+	t.Cleanup(func() { hostbridge.Configure(nil) })
 }
 
 // stubLoginSessions 是 core.LoginSessions 的内存实现（单测用）。

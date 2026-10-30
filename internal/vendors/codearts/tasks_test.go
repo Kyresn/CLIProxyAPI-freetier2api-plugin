@@ -113,15 +113,6 @@ func TestCreditQuotaWithoutMetrics(t *testing.T) {
 	}
 }
 
-// TestMetricFloatAcceptsString 锁住上游数字字符串形态。
-func TestMetricFloatAcceptsString(t *testing.T) {
-	if got := metricFloat("12.5"); got != 12.5 {
-		t.Fatalf("metricFloat = %v, want 12.5", got)
-	}
-	if got := metricFloat(nil); got != 0 {
-		t.Fatalf("metricFloat(nil) = %v", got)
-	}
-}
 func TestDescribeSnapErrorKeepsGatewayReason(t *testing.T) {
 	got := describeSnapError([]byte(`{"error_code":"APIG.0301","error_msg":"verify ak sk signature fail"}`))
 	if !strings.Contains(got, "APIG.0301") || !strings.Contains(got, "signature fail") {

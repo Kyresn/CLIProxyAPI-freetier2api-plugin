@@ -106,3 +106,20 @@ func TestRunScheduledForAccountSkipsUndeclaredKind(t *testing.T) {
 		t.Fatalf("调用记录 = %v, want [travel]", vendor.calls)
 	}
 }
+
+// TestParseClockKeepsMinutes 锁住 auto_checkin_at 的分钟部分不被丢弃。
+func TestParseClockKeepsMinutes(t *testing.T) {
+	hour, minute, ok := parseClock("10:05")
+	if !ok || hour != 10 || minute != 5 {
+		t.Fatalf("parseClock = %d:%d/%v, want 10:5/true", hour, minute, ok)
+	}
+	if _, ok := parseClockHour("10:05"); !ok {
+		t.Fatal("parseClockHour 应接受合法时间")
+	}
+	if _, _, ok := parseClock("25:00"); ok {
+		t.Fatal("非法小时应拒绝")
+	}
+	if _, _, ok := parseClock("10:60"); ok {
+		t.Fatal("非法分钟应拒绝")
+	}
+}

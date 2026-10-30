@@ -113,6 +113,7 @@ func TestFetchModelsErrorsOnUnknownShape(t *testing.T) {
 // 透传到倍率列，整数则标成「档位 N」，缺失则留空（控制台显示「—」，不能
 // 写成免费，也不能把 3 格式化成 3.00X）。
 func TestFetchModelsParsesCreditLevel(t *testing.T) {
+	useLoopbackHost(t)
 	baseURL := serveModels(t, `{"models":[
 	 {"id":"zai_auto","creditConsumptionLevel":"中"},
 	 {"id":"zai_auto-fast","creditConsumptionLevel":"低"},

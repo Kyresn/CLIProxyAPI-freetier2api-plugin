@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -303,23 +302,11 @@ func identifier(source map[string]any, key string) string {
 // firstInt 按候选键顺序取第一个非零整数（兼容数字字符串）。
 func firstInt(source map[string]any, keys ...string) int64 {
 	for _, key := range keys {
-		if parsed := intFromAny(source[key]); parsed != 0 {
+		if parsed := core.Int64FromAny(source[key]); parsed != 0 {
 			return parsed
 		}
 	}
 	return 0
-}
-
-// intFromAny 宽容解析整数：数字、json.Number 与数字字符串。
-func intFromAny(value any) int64 {
-	if text, okText := value.(string); okText {
-		parsed, errParse := strconv.ParseFloat(strings.TrimSpace(text), 64)
-		if errParse != nil {
-			return 0
-		}
-		return int64(parsed)
-	}
-	return int64(core.IntFromAny(value))
 }
 
 // jsonEscape 把字符串转成 JSON 字符串字面量内容（不含引号）。
@@ -538,9 +525,9 @@ func creditQuota(info *accountInfo) (*pluginapi.QuotaFetchResponse, bool) {
 			continue
 		}
 		sawMetric = true
-		amount := metricFloat(metric.Amount)
-		used := metricFloat(metric.Used)
-		remain := metricFloat(metric.Remain)
+		amount, _ := core.FloatFromAny(metric.Amount)
+		used, _ := core.FloatFromAny(metric.Used)
+		remain, _ := core.FloatFromAny(metric.Remain)
 		sumAmount += amount
 		sumUsed += used
 		sumRemain += remain
@@ -605,23 +592,6 @@ func noCreditQuota(info *accountInfo) *pluginapi.QuotaFetchResponse {
 			{Key: "used", Label: "已用积分", Value: 0},
 		},
 	}
-}
-
-// metricFloat 宽容解析指标数值（数字 / json.Number / 数字字符串）。
-func metricFloat(value any) float64 {
-	switch typed := value.(type) {
-	case float64:
-		return typed
-	case json.Number:
-		parsed, _ := typed.Float64()
-		return parsed
-	case string:
-		parsed, errParse := strconv.ParseFloat(strings.TrimSpace(typed), 64)
-		if errParse == nil {
-			return parsed
-		}
-	}
-	return 0
 }
 
 // noBenefitQuota 是「账号没有福利权益」时的额度结果。

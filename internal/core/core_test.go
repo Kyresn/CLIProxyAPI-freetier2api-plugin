@@ -497,3 +497,32 @@ func TestFormatRate(t *testing.T) {
 		}
 	}
 }
+
+// TestFloatFromAnyAcceptsNumbersAndStrings 锁住宽容数值解析。
+func TestFloatFromAnyAcceptsNumbersAndStrings(t *testing.T) {
+	cases := []struct {
+		value any
+		want  float64
+		ok    bool
+	}{
+		{float64(12.5), 12.5, true},
+		{int64(7), 7, true},
+		{"12.5", 12.5, true},
+		{" 7 ", 7, true},
+		{"", 0, false},
+		{nil, 0, false},
+		{"abc", 0, false},
+	}
+	for _, testCase := range cases {
+		got, ok := FloatFromAny(testCase.value)
+		if got != testCase.want || ok != testCase.ok {
+			t.Errorf("FloatFromAny(%v) = %v/%v, want %v/%v", testCase.value, got, ok, testCase.want, testCase.ok)
+		}
+	}
+	if got := Int64FromAny("12.9"); got != 12 {
+		t.Errorf("Int64FromAny = %d, want 12", got)
+	}
+	if got := Int64FromAny(nil); got != 0 {
+		t.Errorf("Int64FromAny(nil) = %d", got)
+	}
+}
