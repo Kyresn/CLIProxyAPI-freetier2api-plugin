@@ -48,3 +48,19 @@ func TestInstancesExposeDomesticAndInternational(t *testing.T) {
 		t.Fatal("缺 region 的旧凭证应默认归国际实例")
 	}
 }
+
+// TestLegacyZCodeCredentialMigratesToGlobal 锁住旧 zcode 凭证的端到端迁移。
+func TestLegacyZCodeCredentialMigratesToGlobal(t *testing.T) {
+	global := Instances(core.Env{})[1].(*adapter)
+	cred, errParse := global.Parse([]byte(`{"vendor":"zcode","jwt_token":"jwt","api_key":"k.s"}`), "zcode-old.json")
+	if errParse != nil {
+		t.Fatalf("Parse: %v", errParse)
+	}
+	if cred.VendorID != VendorIDGlobal || cred.Region != RegionGlobal {
+		t.Fatalf("vendor/region = %q/%q, want %s/%s", cred.VendorID, cred.Region, VendorIDGlobal, RegionGlobal)
+	}
+	native, okNative := cred.Native.(*Credential)
+	if !okNative || native.Vendor != VendorIDGlobal || native.Provider != ProviderZai {
+		t.Fatalf("native = %+v", native)
+	}
+}
