@@ -84,6 +84,10 @@ main { padding: 14px 20px 48px; }
 [hidden], [hidden="true"], [hidden=""] { display: none !important; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .row[hidden] { display: none !important; }
+/* 输入框宽度按份数表达（.grow 一份 / .grow-2 两份）。
+   以前写在内联 style 里，内联 specificity 最高，窄屏想改只能上 !important。 */
+.row > .grow { flex: 1 1 0; min-width: 0; }
+.row > .grow-2 { flex: 2 1 0; min-width: 0; }
 button.act { padding: 6.5px 13px; border: 1px solid var(--border-strong); border-radius: 9px;
              background: var(--card); color: var(--fg); cursor: pointer; font-size: 13px; font-weight: 550;
              transition: background .12s ease, border-color .12s ease, color .12s ease,
@@ -280,7 +284,6 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
      窄屏本来也没有吸顶价值。 */
   #accounts, #scans .table-scroll { overflow-x: auto; }
   #models table { min-width: 820px; }
-  .modal-box { padding: 16px; }
 }
 
 /* 响应式：手机（≤640px）。 */
@@ -291,15 +294,12 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   main { padding: 10px 8px 30px; }
   .card { padding: 12px; }
   .card h2 { font-size: 13.5px; margin-bottom: 10px; }
-  .disclaimer { padding: 9px 12px; font-size: 12px; }
   th, td { padding: 6.5px 7px; font-size: 12px; }
-  thead th { font-size: 11px; }
-  /* 输入框独占一行。两处 !important 都是压 HTML 内联样式的：
-     inline 的 `flex:1` 会覆盖外部 flex-basis，inline 的 `min-width:320px`
-     会让 390px 屏横向溢出。不压这两条，筛选框会被压成一条缝。 */
+  /* 输入框独占一行。宽度来源已是 .grow/.grow-2 而非内联样式，
+     属性选择器 specificity 更高，直接覆盖即可，无需 !important。 */
   .row > input[type=text], .row > input[type=password], .row > input[type=number],
   .row > input[type=tel] {
-    flex: 1 1 100% !important; width: 100%; min-width: 0 !important;
+    flex: 1 1 100%; width: 100%;
   }
   /* select 嵌在 <label> 里：先让 label 可压缩，select 才跟着收窄，
      否则 320px 下 #setPromptMode 会以 option 的自然宽度撑破视口。 */
@@ -307,10 +307,6 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   .row select { max-width: 100%; min-width: 0; }
   /* 按钮按内容均分，避免多个按钮各占一行显得松散。 */
   .row > button.act { flex: 1 1 auto; min-width: 0; }
-  .modal { padding: 12px; }
-  .modal-box { padding: 14px; }
-  .logbox { max-height: 320px; padding: 10px 11px; }
-  .bar { width: 56px; }
   #models table { min-width: 720px; }
 }
 
@@ -329,7 +325,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   <div class="card" id="keyBox" hidden>
     <h2>管理密钥</h2>
     <div class="row">
-      <input type="password" id="keyInput" placeholder="填入 CPA 管理密钥（remote-management.secret-key）" style="flex:1;min-width:280px">
+      <input type="password" id="keyInput" placeholder="填入 CPA 管理密钥（remote-management.secret-key）" class="grow">
       <button class="act primary" id="btnUseKey">使用</button>
     </div>
     <div class="hint">
@@ -366,12 +362,12 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       <div class="card" id="smsBox" hidden>
         <h2 id="smsTitle">手机验证码登录</h2>
         <div class="row" style="margin-bottom:8px">
-          <input type="tel" id="inputSmsPhone" placeholder="手机号（11 位）" style="flex:2;min-width:240px">
+          <input type="tel" id="inputSmsPhone" placeholder="手机号（11 位）" class="grow-2">
           <button class="act" id="btnSmsSend">发送验证码</button>
         </div>
         <div class="row" style="margin-bottom:8px">
-          <input type="text" id="inputSmsCode" placeholder="6 位短信验证码" style="flex:1;min-width:160px" maxlength="6">
-          <input type="text" id="inputSmsLabel" placeholder="备注名称（可选）" style="flex:1;min-width:140px">
+          <input type="text" id="inputSmsCode" placeholder="6 位短信验证码" class="grow" maxlength="6">
+          <input type="text" id="inputSmsLabel" placeholder="备注名称（可选）" class="grow">
           <button class="act primary" id="btnSmsVerify">登录并添加</button>
           <button class="act" id="btnSmsCancel">取消</button>
         </div>
@@ -383,7 +379,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         <div class="row" id="loginVariantRow" hidden style="display:none"></div>
         <div class="login-captcha" id="loginCaptcha" hidden></div>
         <div class="row">
-          <input type="text" id="loginUrl" readonly style="flex:1;min-width:320px">
+          <input type="text" id="loginUrl" readonly class="grow">
           <button class="act" id="btnOpenUrl">打开链接</button>
           <button class="act" id="btnCopyUrl">复制</button>
           <button class="act" id="btnLoginCancel">取消</button>
@@ -405,8 +401,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       <div class="card" id="apiKeyBox" hidden>
         <h2 id="apiKeyTitle">添加 API Key 账号</h2>
         <div class="row" style="margin-bottom:8px">
-          <input type="password" id="inputApiKey" placeholder="输入 API Key（必填）" style="flex:2;min-width:280px">
-          <input type="text" id="inputApiLabel" placeholder="备注名称（可选）" style="flex:1;min-width:140px">
+          <input type="password" id="inputApiKey" placeholder="输入 API Key（必填）" class="grow-2">
+          <input type="text" id="inputApiLabel" placeholder="备注名称（可选）" class="grow">
           <button class="act primary" id="btnSubmitApiKey">保存账号</button>
           <button class="act" id="btnCancelApiKey">取消</button>
         </div>
