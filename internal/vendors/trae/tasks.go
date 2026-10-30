@@ -380,7 +380,7 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 		if pack.EntitlementBaseInfo.ProductType != 2 {
 			continue
 		}
-		limit, okLimit := flexFloat(pack.EntitlementBaseInfo.Quota.CreditsLimit)
+		limit, okLimit := core.FloatFromAny(pack.EntitlementBaseInfo.Quota.CreditsLimit)
 		if !okLimit {
 			continue
 		}
@@ -390,7 +390,7 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 			continue
 		}
 		total += limit
-		if amount, okAmount := flexFloat(pack.Usage.CreditsAmount); okAmount && amount > 0 {
+		if amount, okAmount := core.FloatFromAny(pack.Usage.CreditsAmount); okAmount && amount > 0 {
 			used += amount
 		}
 	}
@@ -414,25 +414,4 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 		response.Summary[0] = pluginapi.QuotaMetric{Key: "credit_remain", Label: "剩余积分", Value: -1, Unit: "unlimited"}
 	}
 	return response, nil
-}
-
-// flexFloat 宽容解析上游数字字段：接受 JSON 数字与数字字符串，
-// 键缺失 / 空串 / null 返回 false（调用方按 0 或跳过处理）。
-func flexFloat(value any) (float64, bool) {
-	switch typed := value.(type) {
-	case float64:
-		return typed, true
-	case json.Number:
-		parsed, errParse := typed.Float64()
-		return parsed, errParse == nil
-	case string:
-		trimmed := strings.TrimSpace(typed)
-		if trimmed == "" {
-			return 0, false
-		}
-		parsed, errParse := strconv.ParseFloat(trimmed, 64)
-		return parsed, errParse == nil
-	default:
-		return 0, false
-	}
 }
