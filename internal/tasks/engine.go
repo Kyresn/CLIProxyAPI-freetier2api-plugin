@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -90,7 +91,40 @@ func (s *Service) nextScheduledWake(now time.Time) ([]string, time.Time) {
 
 // effectiveSchedule 返回生效的排程（页面设置优先于默认值）。
 func (s *Service) effectiveSchedule() map[string][]int {
-	return s.catalog.EffectiveSchedule(s.deps.State().TaskSchedules)
+	schedule := s.catalog.EffectiveSchedule(s.deps.State().TaskSchedules)
+	// auto_checkin_at 是用户明确配置的签到时刻；未在任务排程里单独覆盖时
+	// 以它为准，否则页面上的设置永远不会生效（默认排程是 9/21 点）。
+	if s.effectiveAutoCheckin() {
+		if _, overridden := s.deps.State().TaskSchedules[core.TaskKindCheckin]; !overridden {
+			if hour, okHour := parseClockHour(s.checkinAt()); okHour {
+				// 保留默认排程点作为重试兜底：签到幂等，多跑一轮只多一次读。
+				schedule[core.TaskKindCheckin] = append([]int{hour}, schedule[core.TaskKindCheckin]...)
+			}
+		}
+	}
+	return schedule
+}
+
+// checkinAt 返回生效的自动签到时刻（页面设置优先）。
+func (s *Service) checkinAt() string {
+	if at := strings.TrimSpace(s.deps.State().AutoCheckinAt); at != "" {
+		return at
+	}
+	return strings.TrimSpace(s.deps.Config().AutoCheckinAt)
+}
+
+// parseClockHour 把 HH:MM 解析成小时；分钟部分按整点执行（排程粒度为小时）。
+func parseClockHour(value string) (int, bool) {
+	parts := strings.Split(strings.TrimSpace(value), ":")
+	if len(parts) != 2 {
+		return 0, false
+	}
+	hour, errHour := strconv.Atoi(strings.TrimSpace(parts[0]))
+	minute, errMinute := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if errHour != nil || errMinute != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return 0, false
+	}
+	return hour, true
 }
 
 // pokeScheduler 唤醒调度循环重新计算下次执行时刻。
@@ -148,14 +182,9 @@ func (s *Service) effectiveAutoCheckin() bool {
 
 // effectiveSettings 返回页面设置与配置合并后的可读视图。
 func (s *Service) effectiveSettings() map[string]any {
-	state := s.deps.State()
-	checkinAt := state.AutoCheckinAt
-	if checkinAt == "" {
-		checkinAt = s.deps.Config().AutoCheckinAt
-	}
 	return map[string]any{
 		"auto_checkin":    s.effectiveAutoCheckin(),
-		"auto_checkin_at": checkinAt,
+		"auto_checkin_at": s.checkinAt(),
 		"auto_tasks":      s.effectiveAutoTasks(),
 		"schedule":        s.effectiveSchedule(),
 		"task_specs":      s.catalog.Specs(),

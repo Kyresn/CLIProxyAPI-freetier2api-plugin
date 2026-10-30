@@ -657,7 +657,7 @@ func TestCheckinSkipsWhenAlreadyCheckedIn(t *testing.T) {
 	}
 }
 
-func TestCheckinTreats9074AsRateLimit(t *testing.T) {
+func TestCheckinTreats9074AsBusy(t *testing.T) {
 	stubHost(t)
 	_, cfg := checkinServer(t,
 		`{"code":0,"enable":true,"checked_in":false,"credits":100}`,
@@ -671,16 +671,21 @@ func TestCheckinTreats9074AsRateLimit(t *testing.T) {
 	if !okFailure {
 		t.Fatalf("错误类型 = %T, want *core.Failure", errCheckin)
 	}
-	if failure.Kind != core.FailureKindRateLimit {
-		t.Errorf("9074 应分类为限流，得到 %q", failure.Kind)
+	if failure.Kind != core.FailureKindBusy {
+		t.Errorf("9074 应分类为 busy，得到 %q", failure.Kind)
 	}
 }
 
 func TestCheckinDeviceIDIsStable(t *testing.T) {
 	cred := testCredential()
 	first := CheckinDeviceID(cred)
-	if len(first) != 16 {
-		t.Fatalf("device id 长度 = %d, want 16", len(first))
+	if len(first) != 15 {
+		t.Fatalf("device id 长度 = %d, want 15", len(first))
+	}
+	for _, char := range first {
+		if char < '0' || char > '9' {
+			t.Fatalf("device id 必须全是数字: %q", first)
+		}
 	}
 	if second := CheckinDeviceID(cred); second != first {
 		t.Errorf("device id 不稳定: %s vs %s", first, second)
@@ -714,7 +719,7 @@ func TestFetchQuotaSumsCreditPacks(t *testing.T) {
 	if gotPayload["require_usage"] != true {
 		t.Errorf("require_usage = %v", gotPayload["require_usage"])
 	}
-	if gotPayload["req_source"] != float64(1) {
+	if gotPayload["req_source"] != float64(2) {
 		t.Errorf("req_source = %v", gotPayload["req_source"])
 	}
 	values := map[string]float64{}

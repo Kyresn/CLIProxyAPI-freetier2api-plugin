@@ -27,6 +27,11 @@ type Credential struct {
 	Label        string `json:"label,omitempty"`
 	AuthMode     string `json:"auth_mode,omitempty"` // "oauth" 或 "token"
 	BaseURL      string `json:"base_url,omitempty"`
+	// TimezoneID 是签到接口要求的 IANA 时区名（如 Asia/Shanghai）。
+	//
+	// 上游按客户端上报的时区结算自然日，缺失会以 HTTP 200 + invalid timezone_id
+	// 拒绝。留空时按本机时区推导（见 signinTimezoneID）。
+	TimezoneID string `json:"timezone_id,omitempty"`
 }
 
 // RandomUUID 生成 RFC 4122 v4 UUID。
@@ -174,6 +179,10 @@ func ParseCredential(raw []byte, defaultRegion Region) (*Credential, error) {
 		Label:    core.FirstNonEmpty(core.GetString(m, "label"), core.GetString(m, "name")),
 		AuthMode: authMode,
 		BaseURL:  core.GetString(m, "base_url"),
+		TimezoneID: core.FirstNonEmpty(
+			core.GetString(m, "timezone_id"),
+			core.GetString(m, "timezone"),
+		),
 	}
 
 	cred.EnsureIdentifiers()

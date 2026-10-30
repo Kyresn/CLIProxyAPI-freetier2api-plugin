@@ -244,23 +244,53 @@ func (v *adapter) Quota(ctx context.Context, cred *core.Credential) (*pluginapi.
 	}, nil
 }
 
-// Checkin 执行一次每日签到（登录领取积分，幂等）。
+// Checkin 领取一次性的桌面端登录奖励（幂等）。
+//
+// 注意：小浣熊**没有每日签到端点**——每日积分由服务端自动发放。这条只是
+// 官方桌面端登录弹窗的一次性领取，因此「已领过」不写签到日期（NotRecorded），
+// 避免控制台每天显示「今日已签到」。
 func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.CheckinResult, error) {
 	native, errNative := v.Native(cred)
 	if errNative != nil {
 		return nil, errNative
 	}
-	_, errGrant := ClaimDailyGrant(ctx, v.resolveOrigin(), native)
+	granted, credit, errGrant := ClaimDailyGrant(ctx, v.resolveOrigin(), native)
 	if errGrant != nil {
 		if errGrant == ErrCheckinNotGranted {
-			return &core.CheckinResult{Already: true, Message: "今日积分已发放（幂等命中）"}, nil
+			return &core.CheckinResult{
+				Already:     true,
+				NotRecorded: true,
+				Message:     "该账号已领取过桌面端登录奖励（每号一次）",
+			}, nil
 		}
 		return nil, core.ToPluginError(errGrant)
 	}
-	return &core.CheckinResult{Message: "登录领取成功，积分已入账"}, nil
+	if !granted {
+		return &core.CheckinResult{
+			Already:     true,
+			NotRecorded: true,
+			Message:     "该账号已领取过桌面端登录奖励（每号一次）",
+		}, nil
+	}
+	message := "登录奖励领取成功（一次性）"
+	if credit > 0 {
+		message = fmt.Sprintf("登录奖励领取成功 +%d 积分（一次性）", credit)
+	}
+	return &core.CheckinResult{Credit: credit, Message: message}, nil
 }
 
 func (v *adapter) SupportsCheckin() bool { return true }
+
+// SupportsCheckinFor 报告该账号是否支持「每日签到」。
+//
+// 小浣熊没有每日签到端点：每日积分由服务端自动发放，客户端只有一次性的
+// 桌面端登录奖励。把它登记成签到会让每个账号每天产生一条失败历史。
+func (v *adapter) SupportsCheckinFor(_ *core.Credential) bool { return false }
+
+// CheckinUnsupportedReason 返回不可签到的可读原因。
+func (v *adapter) CheckinUnsupportedReason(_ *core.Credential) string {
+	return "小浣熊没有每日签到；桌面端登录奖励为一次性领取"
+}
 
 // ---- 登录与续期 ----
 
@@ -339,8 +369,9 @@ func (v *adapter) SubmitCallback(ctx context.Context, state, rawURL string) (*co
 	if uid != "" {
 		credential.ApplyIdentity(uid, "")
 	}
-	if uidInfo, nickname, errInfo := FetchUserInfo(ctx, v.resolveAuthBase(), credential); errInfo == nil {
-		credential.ApplyIdentity(uidInfo, nickname)
+	if profile, errInfo := FetchUserProfile(ctx, v.resolveAuthBase(), credential); errInfo == nil {
+		credential.ApplyIdentity(profile.UID, profile.Nickname)
+		credential.OfficeIdentity = profile.OfficeIdentity
 	}
 	if credential.UIDOrTokenID() == "" {
 		return nil, core.NewPluginError("login_failed", "授权码换票未返回用户标识", http.StatusInternalServerError)
@@ -388,6 +419,7 @@ var (
 	_ core.Vendor               = (*adapter)(nil)
 	_ core.CallbackSubmitter    = (*adapter)(nil)
 	_ core.CheckinProvider      = (*adapter)(nil)
+	_ core.CheckinCapability    = (*adapter)(nil)
 	_ core.Configurable         = (*adapter)(nil)
 	_ core.ConfigFieldsProvider = (*adapter)(nil)
 	_ core.CreditsProvider      = (*adapter)(nil)

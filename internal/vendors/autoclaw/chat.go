@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -52,6 +53,8 @@ const (
 	authSecret    = "38d2391985e2369a5fb8227d8e6cd5e5"
 	clientVer     = "1.18.5"
 	errorCodeDead = 410000 // 未登录/会话失效
+	// errorCodeAuthExpired 是参考实现列出的另一个登录过期码。
+	errorCodeAuthExpired = 400000
 )
 
 // chatHTTPTimeout 是非流式对话的上限。
@@ -90,26 +93,39 @@ func bearer(token string) string {
 }
 
 // ApplyUserAPIHeaders 写入 userapi REST 请求所需的全部头（业务信封接口）。
+//
+// 客户端指纹与官方桌面端一致：参考实现（Agent2API signed_auth_headers）
+// 对 refresh / balance / 签到 / 模型配置共用这一组头，且明确提示裁剪它们
+// 会让上游把请求判成非官方客户端。签名（appid/ts/MD5）保持不变。
 func ApplyUserAPIHeaders(req *http.Request, token string) {
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("X-Version", clientVer)
-	req.Header.Set("X-Tm", "web")
+	req.Header.Set("X-Tm", desktopPlatform())
 	req.Header.Set("X-Product", "autoclaw")
-	req.Header.Set("X-Client-Type", "web")
+	req.Header.Set("X-Client-Type", "pc")
+	req.Header.Set("X-Harness-Type", "zcode")
 	req.Header.Set("X-Channel", "official")
 	req.Header.Set("X-Auth-Appid", authAppID)
 	req.Header.Set("X-Auth-TimeStamp", ts)
 	req.Header.Set("X-Auth-Sign", AuthSign(ts))
 	req.Header.Set("X-Trace-Id", core.RandomHex(16))
-	req.Header.Set("X-Lang", "en")
+	req.Header.Set("X-Lang", "zh-CN")
 	// 不能留空：Go 默认的 "Go-http-client/1.1" 会被阿里云 WAF 以 405 HTML 拦截
 	// （实测同一请求只换 UA 就恢复；OAuth 的 405 就是这么来的）。
 	req.Header.Set("User-Agent", "AutoClaw/"+clientVer)
 	if strings.TrimSpace(token) != "" {
 		req.Header.Set("Authorization", bearer(token))
 	}
+}
+
+// desktopPlatform 返回官方桌面端使用的 X-Tm 平台标识。
+func desktopPlatform() string {
+	if runtime.GOOS == "windows" {
+		return "win"
+	}
+	return "linux"
 }
 
 // ApplyOAuthHeaders 写入国际版 OAuth 两跳（oauth-url / oauth-login）的请求头。
@@ -173,8 +189,8 @@ func ApplyModelsHeaders(req *http.Request, token string) {
 	req.Header.Set("Accept", "application/json")
 }
 
-// DeadCode 报告业务码是否为「会话失效」（410000）。
-func DeadCode(code int64) bool { return code == errorCodeDead }
+// DeadCode 报告业务码是否为「会话失效」（410000 / 400000）。
+func DeadCode(code int64) bool { return code == errorCodeDead || code == errorCodeAuthExpired }
 
 // ChatRequest 是一次对话转发的输入。
 type ChatRequest struct {

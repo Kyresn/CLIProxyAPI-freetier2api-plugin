@@ -178,6 +178,88 @@ func signHuaweiRequest(req *http.Request, body []byte, cred *Credential) {
 		", Signature="+signature)
 }
 
+// snapSignedHeaderNames 是 snap-access 请求参与签名的固定头集合。
+//
+// 参考实现（逆向 IDE 的 signer.js）只签这些头；把 Agent-Type / User-Agent
+// 等业务头也塞进 SignedHeaders 会被网关以 APIG.0301 拒绝（实测）。
+var snapSignedHeaderNames = []string{
+	"content-type",
+	"host",
+	"x-sdk-content-sha256",
+	"x-sdk-date",
+	"x-security-token",
+	"maas_type",
+}
+
+// signSnapRequest 为 snap-access ops/statistics 请求注入 SDK-HMAC-SHA256 签名。
+//
+// 与 signHuaweiRequest 的区别：只签固定头集合，且 Agent-Type / X-Language
+// 在签名**之后**追加。这两个头仍会被发送（服务端路由需要），但不参与验签。
+func signSnapRequest(req *http.Request, body []byte, cred *Credential) {
+	if cred.AccessKeyID == "" || cred.SecretAccessKey == "" {
+		return
+	}
+	xDate := time.Now().UTC().Format("20060102T150405Z")
+	req.Header.Set("X-Sdk-Date", xDate)
+	req.Header.Set("Host", req.URL.Host)
+	if cred.SecurityToken != "" {
+		req.Header.Set("X-Security-Token", cred.SecurityToken)
+	}
+	if req.Method != http.MethodGet && req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	payloadHash := sha256Hex(body)
+	req.Header.Set("X-Sdk-Content-Sha256", payloadHash)
+
+	keys := make([]string, 0, len(snapSignedHeaderNames))
+	seen := make(map[string]bool, len(snapSignedHeaderNames))
+	for _, name := range snapSignedHeaderNames {
+		if name == "maas_type" && req.Header.Get(HeaderMaasType) == "" {
+			continue
+		}
+		if name == "content-type" && req.Header.Get("Content-Type") == "" {
+			continue
+		}
+		if name == "x-security-token" && req.Header.Get("X-Security-Token") == "" {
+			continue
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+
+	var canonical strings.Builder
+	for _, name := range keys {
+		canonical.WriteString(name + ":" + strings.TrimSpace(req.Header.Get(name)) + "\n")
+	}
+	signedHeaders := strings.Join(keys, ";")
+
+	canonicalRequest := strings.Join([]string{
+		req.Method,
+		canonicalURI(req.URL.EscapedPath()),
+		canonicalQuery(req.URL.RawQuery),
+		canonical.String(),
+		signedHeaders,
+		payloadHash,
+	}, "\n")
+	stringToSign := strings.Join([]string{
+		"SDK-HMAC-SHA256",
+		xDate,
+		sha256Hex([]byte(canonicalRequest)),
+	}, "\n")
+	signature := hmacHex(cred.SecretAccessKey, stringToSign)
+	req.Header.Set("Authorization", "SDK-HMAC-SHA256 Access="+cred.AccessKeyID+
+		", SignedHeaders="+signedHeaders+
+		", Signature="+signature)
+
+	// 签名后追加：不参与验签，但服务端按它们选择响应形态。
+	req.Header.Set("Agent-Type", "PromptCenter")
+	req.Header.Set("X-Language", "zh-cn")
+}
+
 func canonicalHeaders(req *http.Request) (headers, signed string) {
 	keys := make([]string, 0, len(req.Header))
 	for k := range req.Header {
@@ -278,6 +360,21 @@ const (
 	EpBenefitGateway = "/v1/benefit-gateway-config"
 	// EpBenefitBalance 查询每日 / 每月福利 Token 额度。
 	EpBenefitBalance = "/api/v1/user/tokens/balance"
+
+	// 每日签到（积分活动）走 IDE 直连的 snap-access ops 接口，与福利 Token
+	// 的 opengw 通道是两套协议：
+	//   账户/套餐  GET  {snap}/snap-manager/v1/statistics/plugin
+	//   活动列表   GET  {snap}/v1/ops/delivery?channel=IDE
+	//   领取       POST {snap}/v1/ops/claim   {campaignId, channel:"IDE"}
+	//   领取确认   POST {snap}/v1/ops/confirm {campaignId}
+	EpPackageInfo = "/snap-manager/v1/statistics/plugin"
+	EpOpsDelivery = "/v1/ops/delivery"
+	EpOpsClaim    = "/v1/ops/claim"
+	EpOpsConfirm  = "/v1/ops/confirm"
+	// OpsChannel 声明请求来自 IDE 形态（对齐官方客户端的 channel=IDE）。
+	OpsChannel = "IDE"
+	// OpsDailyLoginType 是「每日登录领取」在活动列表里的 type。
+	OpsDailyLoginType = "USER_LOGIN"
 
 	// HeaderMaasType 区分推理通道：带 benefit 走每日免费额度，不带则按订阅积分计费。
 	HeaderMaasType = "maas_type"
