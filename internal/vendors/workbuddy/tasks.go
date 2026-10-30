@@ -2570,24 +2570,9 @@ func (c *Client) DailyCheckin(cred *Credential) (*CheckinResult, error) {
 // 不用 billingJSON：它在业务码非 0 时只返回分类错误，丢掉了 msg 与 data，
 // 而签到结果恰好要靠文案区分「已签到 / 处理中 / 失败」。
 func (c *Client) claimDailyCheckin(cred *Credential, url string) (status int, code int64, msg string, data json.RawMessage, raw []byte, err error) {
-	body, errMarshal := json.Marshal(map[string]any{})
-	if errMarshal != nil {
-		return 0, 0, "", nil, nil, errMarshal
-	}
-	req, errReq := http.NewRequestWithContext(c.opts.Context, http.MethodPost, url, strings.NewReader(string(body)))
-	if errReq != nil {
-		return 0, 0, "", nil, nil, fmt.Errorf("build checkin request: %w", errReq)
-	}
-	c.applyBillingHeaders(req, cred)
-
-	resp, errDo := c.shortClient().Do(req)
-	if errDo != nil {
-		return 0, 0, "", nil, nil, fmt.Errorf("checkin request: %w", errDo)
-	}
-	defer closeBody(resp.Body)
-	raw, errRead := io.ReadAll(io.LimitReader(resp.Body, apiBodyLimit))
-	if errRead != nil {
-		return resp.StatusCode, 0, "", nil, nil, fmt.Errorf("read checkin response: %w", errRead)
+	status, raw, header, errCall := c.billingRaw(cred, url, http.MethodPost, map[string]any{})
+	if errCall != nil {
+		return 0, 0, "", nil, nil, errCall
 	}
 	var envelope struct {
 		Code int64           `json:"code"`
@@ -2595,15 +2580,15 @@ func (c *Client) claimDailyCheckin(cred *Credential, url string) (status int, co
 		Data json.RawMessage `json:"data"`
 	}
 	if errUnmarshal := json.Unmarshal(raw, &envelope); errUnmarshal != nil {
-		if resp.StatusCode >= 400 {
-			return resp.StatusCode, 0, "", nil, raw, enrichClassifyError(resp.StatusCode, string(raw), resp.Header)
+		if status >= 400 {
+			return status, 0, "", nil, raw, enrichClassifyError(status, string(raw), header)
 		}
-		return resp.StatusCode, 0, "", nil, raw, fmt.Errorf("decode checkin response: %w", errUnmarshal)
+		return status, 0, "", nil, raw, fmt.Errorf("decode checkin response: %w", errUnmarshal)
 	}
-	if resp.StatusCode >= 400 && envelope.Code == 0 {
-		return resp.StatusCode, 0, envelope.Msg, envelope.Data, raw, enrichClassifyError(resp.StatusCode, string(raw), resp.Header)
+	if status >= 400 && envelope.Code == 0 {
+		return status, 0, envelope.Msg, envelope.Data, raw, enrichClassifyError(status, string(raw), header)
 	}
-	return resp.StatusCode, envelope.Code, envelope.Msg, envelope.Data, raw, nil
+	return status, envelope.Code, envelope.Msg, envelope.Data, raw, nil
 }
 
 // Balance 是账号的资源余额。
@@ -2879,16 +2864,38 @@ func parsePackageExpiry(raw string) int64 {
 
 // billingJSON 发起一次计费域请求并解开信封。
 func (c *Client) billingJSON(cred *Credential, url, method string, body any) (json.RawMessage, error) {
+	status, raw, header, errCall := c.billingRaw(cred, url, method, body)
+	if errCall != nil {
+		return nil, errCall
+	}
+	return unwrapEnvelope(status, string(raw), header)
+}
+
+// billingRaw 发一次计费域请求，返回原始状态/正文/响应头。
+//
+// billingJSON 与 claimDailyCheckin 共用这一层：前者解 data 信封，后者需要
+// 保留 code/msg/data 以区分「已签到 / 处理中 / 失败」。
+func (c *Client) billingRaw(cred *Credential, url, method string, body any) (status int, raw []byte, header http.Header, err error) {
 	encoded, errEncode := json.Marshal(body)
 	if errEncode != nil {
-		return nil, fmt.Errorf("encode request: %w", errEncode)
+		return 0, nil, nil, fmt.Errorf("encode request: %w", errEncode)
 	}
 	req, errReq := http.NewRequestWithContext(c.opts.Context, method, url, strings.NewReader(string(encoded)))
 	if errReq != nil {
-		return nil, fmt.Errorf("build request: %w", errReq)
+		return 0, nil, nil, fmt.Errorf("build request: %w", errReq)
 	}
 	c.applyBillingHeaders(req, cred)
-	return c.doJSON(req)
+
+	resp, errDo := c.shortClient().Do(req)
+	if errDo != nil {
+		return 0, nil, nil, fmt.Errorf("request %s: %w", req.URL.Path, errDo)
+	}
+	defer closeBody(resp.Body)
+	raw, errRead := io.ReadAll(io.LimitReader(resp.Body, apiBodyLimit))
+	if errRead != nil {
+		return resp.StatusCode, nil, resp.Header, fmt.Errorf("read %s response: %w", req.URL.Path, errRead)
+	}
+	return resp.StatusCode, raw, resp.Header, nil
 }
 
 // FetchQuota 汇总账号的额度信息（供宿主的管理端展示）。
