@@ -151,6 +151,71 @@ func TestPlanSnapshotClaimableSubtractsHeld(t *testing.T) {
 	}
 }
 
+func TestMergeOfferedPlansCombinesBothChannels(t *testing.T) {
+	// 国内版实测：billing/preview 为空，活动只在 marketing/touch 里。合并后
+	// 必须仍能看到可领套餐，否则按钮永远显示「已领取」。
+	merged := mergeOfferedPlans(
+		[]core.PlanInfo{{PlanID: "a", Priority: 10}},
+		[]core.PlanInfo{{PlanID: "wk", Priority: 101}, {PlanID: "a", Priority: 5}},
+	)
+	if len(merged) != 2 {
+		t.Fatalf("合并结果 = %d 个，want 2: %+v", len(merged), merged)
+	}
+	// 计费通道优先：同 plan_id 保留它的条目（带完整授予明细）。
+	if merged[0].PlanID != "wk" || merged[0].Priority != 101 {
+		t.Fatalf("应按优先级降序且营销投放排最前: %+v", merged)
+	}
+	if merged[1].PlanID != "a" || merged[1].Priority != 10 {
+		t.Fatalf("同 plan_id 应以计费通道条目为准: %+v", merged)
+	}
+	if got := mergeOfferedPlans(nil, nil); len(got) != 0 {
+		t.Fatalf("空合并 = %+v", got)
+	}
+}
+
+// TestPlanGrantQuotaFallsBackToEntitlements 锁住「活动额度未生效时也有数字」：
+// 上游在 effective_at 之前不生成 balances 桶，只能拿授予明细兜底。
+func TestPlanGrantQuotaFallsBackToEntitlements(t *testing.T) {
+	entitlement := map[string]any{
+		"entitlement_id": "ent-1",
+		"show_name":      "GLM-5.3-Flash",
+		"meter":          "model_usage",
+		"unit_type":      "token",
+		"grant_units":    float64(500000000),
+		"effective_at":   float64(200),
+	}
+	plans := []map[string]any{{
+		"status": "active",
+		// 同一份权益出现两次：必须按 entitlement_id 去重，不能重复累加。
+		"entitlements": []any{entitlement, entitlement},
+	}}
+
+	metrics, groups, effectiveAt := planGrantQuota(plans, 100)
+	if effectiveAt != 200 {
+		t.Fatalf("生效时刻 = %d, want 200", effectiveAt)
+	}
+	if len(metrics) != 2 || metrics[1].Value != 500000000 {
+		t.Fatalf("总额指标错误: %+v", metrics)
+	}
+	if len(groups) != 1 || len(groups[0].Buckets) != 1 {
+		t.Fatalf("窗口组错误: %+v", groups)
+	}
+	if !strings.Contains(groups[0].Buckets[0].Description, "生效") {
+		t.Fatalf("未生效的授予应在描述里注明生效时刻: %q", groups[0].Buckets[0].Description)
+	}
+
+	// 非模型用量类授予（功能开关）不参与额度。
+	other := []map[string]any{{
+		"status": "active",
+		"entitlements": []any{map[string]any{
+			"entitlement_id": "ent-2", "meter": "feature", "unit_type": "token", "grant_units": float64(1),
+		}},
+	}}
+	if m, _, _ := planGrantQuota(other, 100); len(m) != 0 {
+		t.Fatalf("功能类授予不应计入额度: %+v", m)
+	}
+}
+
 func TestClaimStatusCountsAndErrors(t *testing.T) {
 	clean := claimStatusOf(planSnapshot{
 		offered: []core.PlanInfo{{PlanID: "a"}, {PlanID: "b"}},

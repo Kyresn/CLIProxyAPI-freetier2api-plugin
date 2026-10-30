@@ -625,6 +625,16 @@ func (s *Service) runForAccounts(
 			Realm:    current.Credential.RegionValue(),
 		}
 		outcome, errAction := action(ctx, current.Vendor, current.Credential)
+		if errAction != nil && isAuthExpired(errAction) {
+			// 凭证过期（如 CodeArts 的 STS security token）是**可续期**的：先保活
+			// 刷新一次再重试，否则一键签到会一直报「token has expired」，用户只能
+			// 自己去点 Token 续期。
+			if refreshed := s.refreshedCredential(ctx, callbackID, quotaJob{
+				entry: current.Entry, vendor: current.Vendor, credential: current.Credential,
+			}); refreshed != nil {
+				outcome, errAction = action(ctx, current.Vendor, refreshed)
+			}
+		}
 		if errAction != nil {
 			result.OK = false
 			result.Message = errAction.Error()

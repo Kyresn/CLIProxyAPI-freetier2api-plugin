@@ -124,9 +124,16 @@ func TestMetricFloatAcceptsString(t *testing.T) {
 		t.Fatalf("core.FloatFromAny(nil) = %v", got)
 	}
 }
-func TestDescribeSnapErrorKeepsGatewayReason(t *testing.T) {
-	got := describeSnapError([]byte(`{"error_code":"APIG.0301","error_msg":"verify ak sk signature fail"}`))
-	if !strings.Contains(got, "APIG.0301") || !strings.Contains(got, "signature fail") {
-		t.Fatalf("describeSnapError = %q", got)
+// TestClassifySnapErrors 锁住 snap 网关错误的分类：正文原因要保留，STS 过期
+// 必须归成可续期的凭证错误（状态 401），宿主的保活重试才会触发。
+func TestClassifySnapErrors(t *testing.T) {
+	signature := Classify(400, `{"error_code":"APIG.0301","error_msg":"verify ak sk signature fail"}`)
+	if !strings.Contains(signature.Msg, "APIG.0301") || !strings.Contains(signature.Msg, "signature fail") {
+		t.Fatalf("签名错误正文丢失: %q", signature.Msg)
+	}
+
+	expired := Classify(400, `{"error_code":"APIG.0602","error_msg":"Bad request: the security token has expired"}`)
+	if expired.Kind != core.FailureKindCredential || expired.HTTPStatus() != http.StatusUnauthorized {
+		t.Fatalf("STS 过期应归为 401 凭证错误: kind=%v status=%d", expired.Kind, expired.HTTPStatus())
 	}
 }

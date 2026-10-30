@@ -184,6 +184,31 @@ func (v *adapter) fetchQuota(ctx context.Context, cred *Credential) (*pluginapi.
 	if snapshot.errBalance != nil {
 		return nil, snapshot.errBalance
 	}
+	if len(snapshot.metrics) == 0 {
+		// 上游在活动额度生效前不会生成 balances 桶，只回空额度；但授予量已经
+		// 写在 plans[].entitlements 里。用授予明细兜底展示「剩余 / 总额」，
+		// 并注明生效时刻，页面不必等到生效那一刻才有数字。
+		if metrics, groups, effectiveAt := planGrantQuota(snapshot.plans, snapshot.serverTime); len(metrics) > 0 {
+			response.Summary = append(response.Summary, metrics...)
+			response.Groups = append(response.Groups, groups...)
+			note := "套餐已领取，额度尚未生效"
+			if effectiveAt > 0 {
+				note = "套餐已领取，额度 " + time.Unix(effectiveAt, 0).UTC().Format(time.RFC3339) + " 生效"
+			}
+			response.Summary = append(response.Summary, pluginapi.QuotaMetric{
+				Key: "status", Label: "账号状态", Value: 1, Unit: note,
+			})
+			return response, nil
+		}
+		// 连授予明细都没有：如实区分「没领套餐」与「领了但桶还没生成」。
+		reason := "尚未领取体验套餐（Start Plan），领取后才有额度"
+		if len(activePlans(snapshot.plans, snapshot.serverTime)) > 0 {
+			reason = "套餐已领取，额度桶尚未生效"
+		}
+		response.Summary = append(response.Summary, pluginapi.QuotaMetric{
+			Key: "status", Label: "账号状态", Value: 1, Unit: reason,
+		})
+	}
 	return response, nil
 }
 
@@ -612,17 +637,121 @@ func (v *adapter) fetchPlanSnapshot(ctx context.Context, cred *Credential) planS
 		}
 	}
 
+	// 投放有两条通道：billing/preview（计费通道）与 marketing/touch（营销通道）。
+	// 国内版实测活动只出现在营销通道，只看计费通道会把「有活动可领」误判成
+	// 「已领取全部套餐」——按钮因此一直是灰的。两条都查再合并。
+	offered, errPreview := previewOfferedPlans(ctx, cred)
+	marketing, errMarketing := queryMarketingTouch(ctx, cred)
+	switch {
+	case errPreview != nil && errMarketing != nil:
+		// 两条都失败才是真的查不到；单边失败仍可能拿到投放。
+		snapshot.errPreview = errPreview
+		return snapshot
+	case errPreview != nil:
+		logger.Info("zcode billing/preview 失败，改用营销投放: %v", errPreview)
+	case errMarketing != nil:
+		logger.Info("zcode marketing/touch 失败: %v", errMarketing)
+	}
+	snapshot.offered = mergeOfferedPlans(offered, marketing)
+	return snapshot
+}
+
+// previewOfferedPlans 查计费通道投放的套餐，把业务失败码折成错误。
+func previewOfferedPlans(ctx context.Context, cred *Credential) ([]core.PlanInfo, error) {
 	offered, code, errOffered := fetchOfferedPlans(ctx, cred)
 	if errOffered != nil {
-		snapshot.errPreview = errOffered
-		return snapshot
+		return nil, errOffered
 	}
 	if code != codeSuccess {
-		snapshot.errPreview = claimFailure(code, nil)
-		return snapshot
+		return nil, claimFailure(code, nil)
 	}
-	snapshot.offered = offered
-	return snapshot
+	return offered, nil
+}
+
+// mergeOfferedPlans 合并两条投放通道的套餐列表。
+//
+// 同一 plan_id 以计费通道为准（它带完整授予明细），其余按 normalizePlans 的
+// 优先级约定重排，保证页面顺序不随上游返回顺序抖动。
+func mergeOfferedPlans(primary, extra []core.PlanInfo) []core.PlanInfo {
+	seen := make(map[string]bool, len(primary)+len(extra))
+	merged := make([]core.PlanInfo, 0, len(primary)+len(extra))
+	for _, group := range [][]core.PlanInfo{primary, extra} {
+		for _, plan := range group {
+			if plan.PlanID == "" || seen[plan.PlanID] {
+				continue
+			}
+			seen[plan.PlanID] = true
+			merged = append(merged, plan)
+		}
+	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].Priority != merged[j].Priority {
+			return merged[i].Priority > merged[j].Priority
+		}
+		return merged[i].PlanID < merged[j].PlanID
+	})
+	return merged
+}
+
+// planGrantQuota 用套餐授予明细兜底额度展示。
+//
+// 活动套餐在 effective_at 之前不会生成 balances 桶，上游因此回空额度；但授予
+// 量已经写在 plans[].entitlements 里。页面据此仍能显示「剩余 / 总额」并注明
+// 生效时刻。balances 非空时不会走到这里。
+//
+// 只认模型用量类（meter=model_usage、unit_type=token）的授予，与 parsePlanGrants
+// 同一口径；按 entitlement_id 去重，避免多套餐重复累加同一份权益。
+func planGrantQuota(plans []map[string]any, serverTime int64) ([]pluginapi.QuotaMetric, []pluginapi.QuotaGroup, int64) {
+	seen := map[string]bool{}
+	group := pluginapi.QuotaGroup{DisplayName: "活动额度"}
+	var total float64
+	effectiveAt := int64(0)
+	for _, plan := range activePlans(plans, serverTime) {
+		entitlements, _ := plan["entitlements"].([]any)
+		for _, item := range entitlements {
+			entry, okEntry := item.(map[string]any)
+			if !okEntry {
+				continue
+			}
+			if meter := core.RawStringField(entry, "meter"); meter != "" && meter != "model_usage" {
+				continue
+			}
+			if unit := core.RawStringField(entry, "unit_type"); unit != "" && unit != "token" {
+				continue
+			}
+			units := floatField(entry, "grant_units")
+			if units <= 0 {
+				continue
+			}
+			key := core.FirstNonEmpty(core.RawStringField(entry, "entitlement_id"), core.RawStringField(entry, "show_name"))
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			total += units
+			name := core.FirstNonEmpty(core.RawStringField(entry, "show_name"), key)
+			description := "活动额度 " + formatTokens(units) + " tokens"
+			if effective := core.GetUnixSeconds(entry, "effective_at"); effective > 0 && serverTime > 0 && effective > serverTime {
+				if effectiveAt == 0 || effective < effectiveAt {
+					effectiveAt = effective
+				}
+				description += "，" + time.Unix(effective, 0).UTC().Format(time.RFC3339) + " 生效"
+			}
+			group.Buckets = append(group.Buckets, pluginapi.QuotaBucket{
+				Window:            name,
+				RemainingFraction: 1,
+				Description:       description,
+			})
+		}
+	}
+	if total <= 0 {
+		return nil, nil, 0
+	}
+	metrics := []pluginapi.QuotaMetric{
+		{Key: "remaining", Label: "剩余", Value: total, Unit: "tokens"},
+		{Key: "total", Label: "总量", Value: total, Unit: "tokens"},
+	}
+	return metrics, []pluginapi.QuotaGroup{group}, effectiveAt
 }
 
 // planRows 取 balance 响应里的 data.plans。
@@ -1213,6 +1342,12 @@ func truncateText(text string, limit int) string {
 
 const pathMarketingTouch = "/api/v1/marketing/touch"
 
+// marketingTimeout 是营销投放查询的上限。
+//
+// 这条通道是额度查询的辅助来源：上游偶发长时间无响应时不能让它把整轮
+// 额度查询拖到超时（实测有 60s 以上的挂起）。
+const marketingTimeout = 10 * time.Second
+
 // marketingHeaders 复用上游身份与鉴权头；本接口是只读 GET，只额外声明 Accept。
 func marketingHeaders(cred *Credential) map[string]string {
 	headers := upstreamAuthHeaders(cred)
@@ -1238,7 +1373,7 @@ func queryMarketingTouch(ctx context.Context, cred *Credential) ([]core.PlanInfo
 		req.Header.Set(key, value)
 	}
 
-	resp, errDo := hostbridge.Client(ctx, billingHTTPTimeout).Do(req)
+	resp, errDo := hostbridge.Client(ctx, marketingTimeout).Do(req)
 	if errDo != nil {
 		return nil, errDo
 	}

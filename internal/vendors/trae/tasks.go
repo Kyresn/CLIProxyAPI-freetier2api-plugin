@@ -213,7 +213,7 @@ func checkinHeadersForUID(cred *Credential, uid string) map[string]string {
 		"Authorization":      "Cloud-IDE-JWT " + cred.AccessToken,
 		"X-Market-Client-Id": traeCheckinMarketClientID,
 		"X-Market-User-Id":   deriveMarketUserID(uid),
-		"X-User-Region":      "CN",
+		"X-User-Region":      regionHeader(cred),
 		"X-Device-Id":        deriveCheckinDeviceID(uid),
 		"X-Lgw-Req-Sdk-Type": "3",
 		"Package-Type":       "stable_cn",
@@ -239,6 +239,16 @@ const (
 	// productTypeCredits 是积分包的产品类型；product_type=0 是功能开关包。
 	productTypeCredits = 2
 )
+
+// regionHeader 返回客户端上报的区域码：国内 CN，国际 SG。
+//
+// 国际版额度端点按区域路由，带 CN 会被网关当成跨区请求拒绝。
+func regionHeader(cred *Credential) string {
+	if cred != nil && cred.Region == RegionGlobal {
+		return "SG"
+	}
+	return "CN"
+}
 
 // traeUserID 返回签到设备身份所用的账号 id。
 //
@@ -329,16 +339,16 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 	if cred == nil || cred.AccessToken == "" {
 		return nil, fmt.Errorf("credential missing")
 	}
-	if cfg.QuotaHost == "" {
-		// 国际版上游没有额度端点（实测 404）。
-		return nil, core.NewPluginError("quota_unsupported", "Trae 国际版无额度查询接口", http.StatusNotImplemented)
+	if cfg.QuotaHost == "" || cfg.QuotaPath == "" {
+		// 没有额度端点的区域（理论上不再出现）如实说明，而不是发一个必然 404 的请求。
+		return nil, core.NewPluginError("quota_unsupported", "Trae 当前区域无额度查询接口", http.StatusNotImplemented)
 	}
 
 	payload, errBody := json.Marshal(map[string]any{"require_usage": true, "req_source": 2})
 	if errBody != nil {
 		return nil, errBody
 	}
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, cfg.QuotaHost+EpEntUsage, bytes.NewReader(payload))
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, cfg.QuotaHost+cfg.QuotaPath, bytes.NewReader(payload))
 	if errReq != nil {
 		return nil, errReq
 	}

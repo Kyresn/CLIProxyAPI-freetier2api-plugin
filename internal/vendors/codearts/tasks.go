@@ -235,7 +235,9 @@ func signedSnapJSON(ctx context.Context, method, url string, cred *Credential, b
 		return nil, fmt.Errorf("read snap response: %w", errRead)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("snap response %d: %s", resp.StatusCode, describeSnapError(raw))
+		// 走统一分类：STS 过期的 400（APIG.0602）必须归成可续期的凭证错误，
+		// 宿主的保活重试才会先刷新再重查。
+		return nil, Classify(resp.StatusCode, string(raw))
 	}
 	var envelope map[string]any
 	if errDecode := json.Unmarshal(raw, &envelope); errDecode != nil {
@@ -252,19 +254,6 @@ func signedSnapJSON(ctx context.Context, method, url string, cred *Credential, b
 		return data, nil
 	}
 	return envelope, nil
-}
-
-// describeSnapError 从华为网关错误体里取出真正原因（APIG.xxxx + error_msg）。
-func describeSnapError(raw []byte) string {
-	var payload struct {
-		ErrorCode string `json:"error_code"`
-		ErrorMsg  string `json:"error_msg"`
-	}
-	if errUnmarshal := json.Unmarshal(raw, &payload); errUnmarshal == nil &&
-		(payload.ErrorCode != "" || payload.ErrorMsg != "") {
-		return strings.TrimSpace(payload.ErrorCode + " " + payload.ErrorMsg)
-	}
-	return core.Truncate(string(raw), 200)
 }
 
 // text / boolValue / identifier / firstInt 是对上游 JSON 的宽容取值助手。

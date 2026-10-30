@@ -69,6 +69,9 @@ const (
 	EpCheckinStatus = "/trae/api/v2/ug/checkin_credits/status"
 	EpCheckinClaim  = "/trae/api/v2/ug/checkin_credits/claim"
 	EpEntUsage      = "/trae/api/v2/pay/ide_user_ent_usage"
+	// EpEntUsageGlobal 是国际版额度端点：路径版本与国内版不同（v1），
+	// 打在鉴权域（growsg-normal）而不是对话域。
+	EpEntUsageGlobal = "/trae/api/v1/pay/ide_user_ent_usage"
 
 	AppID = "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8"
 )
@@ -84,6 +87,8 @@ type Config struct {
 	RefreshHost string
 	CheckinHost string
 	QuotaHost   string
+	// QuotaPath 是额度端点路径：两个区域版本不同（国内 v2 / 国际 v1）。
+	QuotaPath   string
 	ConsoleHost string
 
 	ClientID       string
@@ -107,7 +112,8 @@ func ConfigFor(r Region) Config {
 			AuthHost:       HostAuthGlobal,
 			RefreshHost:    HostAuthGlobal,
 			CheckinHost:    "", // 国际版无签到活动（上游无此端点）
-			QuotaHost:      "", // 国际版无额度端点
+			QuotaHost:      HostAuthGlobal,
+			QuotaPath:      EpEntUsageGlobal,
 			ConsoleHost:    HostConsoleGlobal,
 			ClientID:       ClientIDGlobal,
 			IDEVersion:     IDEVersionGlobal,
@@ -127,6 +133,7 @@ func ConfigFor(r Region) Config {
 		RefreshHost:    HostAuthCN,
 		CheckinHost:    HostAuthCN,
 		QuotaHost:      HostAuthCN,
+		QuotaPath:      EpEntUsage,
 		ConsoleHost:    HostConsoleCN,
 		ClientID:       ClientIDCN,
 		IDEVersion:     IDEVersionCN,

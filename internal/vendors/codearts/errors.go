@@ -141,6 +141,11 @@ func OpenAIErrorFrame(failure *core.Failure) ([]byte, error) {
 // 「这条请求/这个模型不可用」来判，不能照搬 HTTP 状态码规则。
 func classifyFailure(status int, code, msg string, payloadErr bool) *core.Failure {
 	switch {
+	case isSecurityTokenExpired(code, msg):
+		// STS security token 过期是**可续期**的凭证问题：refresh_token 能换一套
+		// 新凭据。状态按 401 归一，宿主的保活重试才会先刷新再重查，而不是把
+		// 账号直接标成不可用。
+		return &core.Failure{Kind: core.FailureKindCredential, Status: http.StatusUnauthorized, Code: code, Msg: msg}
 	case status == http.StatusUnauthorized || status == http.StatusForbidden ||
 		strings.Contains(code, "ExpiredToken") || strings.Contains(code, "InvalidToken"):
 		return &core.Failure{Kind: core.FailureKindCredential, Status: status, Code: code, Msg: msg}
@@ -159,6 +164,20 @@ func classifyFailure(status int, code, msg string, payloadErr bool) *core.Failur
 	default:
 		return &core.Failure{Kind: core.FailureKindClient, Status: status, Code: code, Msg: msg}
 	}
+}
+
+// isSecurityTokenExpired 判断是否为华为云 STS 临时凭据过期。
+//
+// 网关对这种过期的状态码是 400（不是 401），错误码 APIG.0602、正文
+// "the security token has expired"。只按状态码分类会把它当成客户端参数错误，
+// 于是额度查询与签到永远拿不到重试机会。
+func isSecurityTokenExpired(code, msg string) bool {
+	if strings.Contains(code, "APIG.0602") {
+		return true
+	}
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "security token has expired") ||
+		strings.Contains(lower, "securitytoken has expired")
 }
 
 // isBenefitMissing 判断是否为「账号没有该模型的免费福利」。
