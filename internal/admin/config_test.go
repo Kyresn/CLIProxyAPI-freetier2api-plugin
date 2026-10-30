@@ -70,6 +70,11 @@ func TestParseClock(t *testing.T) {
 	if err != nil || hour != 9 || minute != 5 {
 		t.Fatalf("ParseClock = %d,%d,%v", hour, minute, err)
 	}
+	for _, invalid := range []string{"", "9", "24:00", "09:60", "09:05:00"} {
+		if _, _, err := ParseClock(invalid); err == nil {
+			t.Fatalf("ParseClock(%q) 应报错", invalid)
+		}
+	}
 }
 
 func TestDefaultStateDirHonoursEnv(t *testing.T) {

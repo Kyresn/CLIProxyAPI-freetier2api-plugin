@@ -1,9 +1,15 @@
 package minimaxcode
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/url"
+	"strings"
 	"testing"
 
 	"freetier2api-plugin/cpasdk/pluginapi"
+	"freetier2api-plugin/internal/hostbridge"
 )
 
 // membershipFixture 是 2026-10-25 实测 get_membership_info 的裁剪响应。
@@ -161,5 +167,123 @@ func TestPlanWindowBucket(t *testing.T) {
 	}
 	if _, ok = planWindowBucket("通用额度", "7 天", "", float64(0), nil, nil, nil); ok {
 		t.Fatal("empty-string percent must not render")
+	}
+}
+
+// ---- 签到：timezone_id / 业务码 / claim_result ----
+
+// stubCheckinHost 把宿主 HTTP 桥换成固定响应：签到状态与领取各返回给定正文，
+// 其它路径（prepare 的 config/agent/channel-connections）返回空对象。
+func stubCheckinHost(t *testing.T, statusBody, claimBody string) string {
+	t.Helper()
+	hostbridge.Configure(func(callbackID, method string, payload any) (json.RawMessage, error) {
+		raw, errMarshal := json.Marshal(payload)
+		if errMarshal != nil {
+			return nil, errMarshal
+		}
+		var req struct {
+			Method string `json:"method"`
+			URL    string `json:"url"`
+		}
+		if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
+			return nil, errUnmarshal
+		}
+		parsed, errParse := url.Parse(req.URL)
+		if errParse != nil {
+			return nil, errParse
+		}
+		body := "{}"
+		switch parsed.Path {
+		case EpCheckinStatus:
+			body = statusBody
+		case EpCheckinClaim:
+			body = claimBody
+		}
+		return json.Marshal(map[string]any{
+			"StatusCode": http.StatusOK,
+			"Headers":    map[string][]string{"Content-Type": {"application/json"}},
+			"Body":       []byte(body),
+		})
+	})
+	t.Cleanup(func() { hostbridge.Configure(nil) })
+	return "https://agent.test"
+}
+
+func checkinCredential() *Credential {
+	return &Credential{Region: RegionGlobal, AccessToken: "tok", AuthMode: "oauth"}
+}
+
+// TestSigninQuerySendsTimezoneID 锁住签到接口必填的 timezone_id。
+func TestSigninQuerySendsTimezoneID(t *testing.T) {
+	query := buildSigninQuery(checkinCredential(), 1000)
+	if !strings.Contains(query, "timezone_id=") {
+		t.Fatalf("query 缺少 timezone_id: %s", query)
+	}
+}
+
+// TestSigninTargetSignsExactWireQuery 锁住「签名 URL 与线上 URL 逐字节一致」。
+//
+// 曾经签名用一份 query、线上用另一份（多一个 op_ticket），YY 哈希永远匹配
+// 不上实际请求，上游以 HTTP 200 + 业务错误拒绝签到。
+func TestSigninTargetSignsExactWireQuery(t *testing.T) {
+	const base = "https://agent.test"
+	target := buildSigninTarget(checkinCredential(), base, "/v1/api/signin", http.MethodPost, "{}")
+	if wire := strings.TrimPrefix(target.URL, base); wire != target.SignURL {
+		t.Fatalf("SignURL 与线上 URL 不一致:\n sign=%s\n wire=%s", target.SignURL, wire)
+	}
+}
+
+// TestCheckinFailsOnBusinessErrorEnvelope 锁住 HTTP 200 + base_resp 非零必须失败。
+func TestCheckinFailsOnBusinessErrorEnvelope(t *testing.T) {
+	base := stubCheckinHost(t,
+		`{"base_resp":{"status_code":0},"data":{"days":[]}}`,
+		`{"base_resp":{"status_code":1001,"status_msg":"invalid timezone_id"},"data":{}}`)
+	_, errCheckin := Checkin(context.Background(), checkinCredential(), base)
+	if errCheckin == nil {
+		t.Fatal("业务码非零应报错，不能当成签到成功")
+	}
+	if !strings.Contains(errCheckin.Error(), "invalid timezone_id") {
+		t.Fatalf("错误应带上游原因: %v", errCheckin)
+	}
+}
+
+// TestCheckinRejectsUnknownClaimResult 锁住 claim_result 只接受 1/2。
+func TestCheckinRejectsUnknownClaimResult(t *testing.T) {
+	base := stubCheckinHost(t,
+		`{"base_resp":{"status_code":0},"data":{"days":[]}}`,
+		`{"base_resp":{"status_code":0},"data":{"claim_result":0,"points":800}}`)
+	_, errCheckin := Checkin(context.Background(), checkinCredential(), base)
+	if errCheckin == nil {
+		t.Fatal("claim_result=0 应报错")
+	}
+}
+
+// TestCheckinClaimsPoints 锁住 claim_result=1 时上报 points（不是 points+bonus）。
+func TestCheckinClaimsPoints(t *testing.T) {
+	base := stubCheckinHost(t,
+		`{"base_resp":{"status_code":0},"data":{"days":[]}}`,
+		`{"base_resp":{"status_code":0},"data":{"claim_result":1,"points":800,"bonus_points":400}}`)
+	result, errCheckin := Checkin(context.Background(), checkinCredential(), base)
+	if errCheckin != nil {
+		t.Fatalf("Checkin: %v", errCheckin)
+	}
+	if result.Already || result.Credit != 800 {
+		t.Fatalf("结果 = %+v, want +800", result)
+	}
+}
+
+// TestSigninBusinessError 覆盖 base_resp 缺失/零码/非零码三种形态。
+func TestSigninBusinessError(t *testing.T) {
+	if err := signinBusinessError(map[string]any{}); err != nil {
+		t.Fatalf("缺少 base_resp 不应报错: %v", err)
+	}
+	if err := signinBusinessError(map[string]any{"base_resp": map[string]any{"status_code": float64(0)}}); err != nil {
+		t.Fatalf("status_code=0 不应报错: %v", err)
+	}
+	err := signinBusinessError(map[string]any{"base_resp": map[string]any{
+		"status_code": float64(7), "status_msg": "boom",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("非零业务码应带原因: %v", err)
 	}
 }

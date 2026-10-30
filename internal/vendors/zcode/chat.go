@@ -1197,10 +1197,15 @@ func applyCacheControl(body map[string]any) {
 // 约定与其它供应商一致：**禁止在别处硬编码上游常量**，一律引用本文件。
 
 const (
-	// VendorID 是本供应商在 freetier2api 插件内的唯一标识。
+	// VendorID 是本供应商的协议名（旧凭证与登录会话仍使用它）。
 	VendorID = "zcode"
-	// VendorName 是管理端与列表的展示名。
+	// VendorName 是管理端与列表的展示名（协议层通用名）。
 	VendorName = "ZCode"
+	// VendorIDCN / VendorIDGlobal 是国内 / 国际两个实例标识。
+	VendorIDCN       = "zcodecn"
+	VendorNameCN     = "ZCode 国内版"
+	VendorIDGlobal   = "zcodeglobal"
+	VendorNameGlobal = "ZCode 国际版"
 
 	// ── 上游 origin ─────────────────────────────────────────────────────────
 

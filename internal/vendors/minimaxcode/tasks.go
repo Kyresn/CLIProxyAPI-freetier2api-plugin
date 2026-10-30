@@ -45,6 +45,11 @@ func Checkin(ctx context.Context, cred *Credential, baseURLOverride string) (*co
 	if statusResp.StatusCode == http.StatusOK {
 		var statusRaw map[string]any
 		if errDec := json.NewDecoder(statusResp.Body).Decode(&statusRaw); errDec == nil {
+			// 业务码在 base_resp.status_code，且 invalid timezone_id 也是 HTTP 200。
+			// 只判 HTTP 状态会把明确的业务失败当成「今日未领取」。
+			if errBiz := signinBusinessError(statusRaw); errBiz != nil {
+				return nil, errBiz
+			}
 			coreMap := statusRaw
 			if data, ok := statusRaw["data"].(map[string]any); ok {
 				coreMap = data
@@ -89,23 +94,47 @@ func Checkin(ctx context.Context, cred *Credential, baseURLOverride string) (*co
 	if data, ok := claimRaw["data"].(map[string]any); ok {
 		coreMap = data
 	}
+	if errBiz := signinBusinessError(claimRaw); errBiz != nil {
+		return nil, errBiz
+	}
 
 	claimResult := getInt(coreMap, "claim_result", "result")
 	points := core.GetInt64(coreMap, "points")
 
-	// claim_result == 2 表示幂等命中（今日已领取过）
-	if claimResult == 2 {
+	// claim_result：1 = 本次领取成功，2 = 今日已领取（幂等）。
+	// 其它值（含 0 / 缺失）都是「没领成」，不能按成功上报。
+	switch claimResult {
+	case 2:
 		return &core.CheckinResult{
 			Already: true,
 			Message: "今日已完成签到",
 		}, nil
+	case 1:
+		return &core.CheckinResult{
+			Already: false,
+			Credit:  points,
+			Message: fmt.Sprintf("签到成功，获得 %d 积分", points),
+		}, nil
+	default:
+		return nil, core.NewPluginError("claim_result_invalid", "签到响应缺少有效的 claim_result", http.StatusBadGateway)
 	}
+}
 
-	return &core.CheckinResult{
-		Already: false,
-		Credit:  points,
-		Message: fmt.Sprintf("签到成功，获得 %d 积分", points),
-	}, nil
+// signinBusinessError 把上游业务信封里的失败码翻成错误。
+//
+// 签到接口的失败码在 base_resp.status_code（不是 HTTP 状态码），例如缺少
+// timezone_id 时返回 HTTP 200 + status_code != 0。忽略它会把失败报成成功。
+func signinBusinessError(payload map[string]any) error {
+	baseResp, okBase := payload["base_resp"].(map[string]any)
+	if !okBase {
+		return nil
+	}
+	code := core.GetInt64(baseResp, "status_code")
+	if code == 0 {
+		return nil
+	}
+	message := core.FirstNonEmpty(core.GetString(baseResp, "status_msg"), fmt.Sprintf("上游业务错误 %d", code))
+	return core.NewPluginError("upstream_business", message, http.StatusBadGateway)
 }
 
 // FetchQuota 查询 MiniMax 账号的额度余额。

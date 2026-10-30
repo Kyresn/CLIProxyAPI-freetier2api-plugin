@@ -157,6 +157,17 @@ type StorageMerger interface {
 	MergeStorageJSON(original []byte, credential *Credential) ([]byte, error)
 }
 
+// LegacyIDReporter 由「从单一供应商 ID 拆成多实例」的包实现，声明拆分前的旧 ID。
+//
+// 拆实例会换掉注册表里的 vendorID，用户在 disabled_models 与模型别名里写的
+// <旧ID>:<模型> 随之失效（静默不生效）。声明旧 ID 后，Registry 把它当成家族
+// 前缀展开到全部实例（见 Registry.VendorIDsForPrefix），用户配置无需迁移。
+//
+// 未拆分的供应商不实现即可。
+type LegacyIDReporter interface {
+	LegacyIDs() []string
+}
+
 // Configurable 由需要读取供应商专属配置的实例实现。
 //
 // 根层只解析全局键，其余原始键原样交给各供应商自己解释；

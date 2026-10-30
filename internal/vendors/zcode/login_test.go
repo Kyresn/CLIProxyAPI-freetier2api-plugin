@@ -71,3 +71,21 @@ func countSubstring(s, sub string) int {
 	}
 	return count
 }
+
+// TestLoginTokensPreferProviderBlock 锁住按 provider 取 token 分支。
+func TestLoginTokensPreferProviderBlock(t *testing.T) {
+	tokens := loginTokens{TopLevel: "top", Bigmodel: "bm", Zai: "zai"}
+	if got := tokens.pick(ProviderBigmodel); got != "bm" {
+		t.Fatalf("bigmodel token = %q, want bm", got)
+	}
+	if got := tokens.pick(ProviderZai); got != "zai" {
+		t.Fatalf("zai token = %q, want zai", got)
+	}
+	// 对应分支缺失时回退另一分支/顶层，避免整轮登录失败。
+	if got := (loginTokens{Zai: "zai"}).pick(ProviderBigmodel); got != "zai" {
+		t.Fatalf("fallback token = %q, want zai", got)
+	}
+	if got := (loginTokens{TopLevel: "top"}).pick(ProviderZai); got != "top" {
+		t.Fatalf("top-level fallback token = %q, want top", got)
+	}
+}

@@ -90,7 +90,42 @@ func (s *Service) nextScheduledWake(now time.Time) ([]string, time.Time) {
 
 // effectiveSchedule 返回生效的排程（页面设置优先于默认值）。
 func (s *Service) effectiveSchedule() map[string][]int {
-	return s.catalog.EffectiveSchedule(s.deps.State().TaskSchedules)
+	schedule := s.catalog.EffectiveSchedule(s.deps.State().TaskSchedules)
+	// auto_checkin_at 是用户明确配置的签到时刻；未在任务排程里单独覆盖时
+	// 以它为准，否则页面上的设置永远不会生效（默认排程是 9/21 点）。
+	if s.effectiveAutoCheckin() {
+		if _, overridden := s.deps.State().TaskSchedules[core.TaskKindCheckin]; !overridden {
+			if hour, okHour := parseClockHour(s.checkinAt()); okHour {
+				// 保留默认排程点作为重试兜底：签到幂等，多跑一轮只多一次读。
+				schedule[core.TaskKindCheckin] = append([]int{hour}, schedule[core.TaskKindCheckin]...)
+			}
+		}
+	}
+	return schedule
+}
+
+// checkinAt 返回生效的自动签到时刻（页面设置优先）。
+func (s *Service) checkinAt() string {
+	if at := strings.TrimSpace(s.deps.State().AutoCheckinAt); at != "" {
+		return at
+	}
+	return strings.TrimSpace(s.deps.Config().AutoCheckinAt)
+}
+
+// parseClockHour 把 HH:MM 转成排程用的整点小时。
+//
+// 排程粒度是整点，分钟部分向上取整而不是丢弃：用户写 10:35 就是希望
+// 10:35 之后才跑（签到窗口常常 10:30 才开），按 10:00 执行会跑空。
+// 23:xx 取整后落到次日 00:00，同样不早于设定时刻。
+func parseClockHour(value string) (int, bool) {
+	hour, minute, ok := core.ParseClock(value)
+	if !ok {
+		return 0, false
+	}
+	if minute > 0 {
+		hour = (hour + 1) % 24
+	}
+	return hour, true
 }
 
 // pokeScheduler 唤醒调度循环重新计算下次执行时刻。
@@ -148,14 +183,9 @@ func (s *Service) effectiveAutoCheckin() bool {
 
 // effectiveSettings 返回页面设置与配置合并后的可读视图。
 func (s *Service) effectiveSettings() map[string]any {
-	state := s.deps.State()
-	checkinAt := state.AutoCheckinAt
-	if checkinAt == "" {
-		checkinAt = s.deps.Config().AutoCheckinAt
-	}
 	return map[string]any{
 		"auto_checkin":    s.effectiveAutoCheckin(),
-		"auto_checkin_at": checkinAt,
+		"auto_checkin_at": s.checkinAt(),
 		"auto_tasks":      s.effectiveAutoTasks(),
 		"schedule":        s.effectiveSchedule(),
 		"task_specs":      s.catalog.Specs(),

@@ -27,8 +27,8 @@ type activitiesPreviewResponse struct {
 func TestZCodeActivityPreviewIsReadOnlyAndDegradesWithoutUserID(t *testing.T) {
 	host := installFakeHost(t)
 	setupTestPlugin(t)
-	host.AddAccount("1", "zcode-with-uid.json", `{"vendor":"zcode","api_key":"sk-test","user_id":"u-test","profile":{"platform":"win32","arch":"x64","device_mid":"dev-test"}}`)
-	host.AddAccount("2", "zcode-without-uid.json", `{"vendor":"zcode","api_key":"sk-test-2","profile":{"platform":"win32","arch":"x64","device_mid":"dev-test-2"}}`)
+	host.AddAccount("1", "zcodeglobal-with-uid.json", `{"vendor":"zcodeglobal","api_key":"sk-test","user_id":"u-test","profile":{"platform":"win32","arch":"x64","device_mid":"dev-test"}}`)
+	host.AddAccount("2", "zcodeglobal-without-uid.json", `{"vendor":"zcodeglobal","api_key":"sk-test-2","profile":{"platform":"win32","arch":"x64","device_mid":"dev-test-2"}}`)
 
 	var claimCalls, activationCalls int
 	host.SetUpstream(func(method, rawURL, _ string) testhost.UpstreamResponse {
@@ -45,7 +45,7 @@ func TestZCodeActivityPreviewIsReadOnlyAndDegradesWithoutUserID(t *testing.T) {
 	})
 
 	// 有 user_id：补报两条活跃事件，探测结果完整，无 warning。
-	withUID := previewActivities(t, "zcode-with-uid.json")
+	withUID := previewActivities(t, "zcodeglobal-with-uid.json")
 	if !withUID.OK || withUID.Warning != "" {
 		t.Fatalf("with uid: %+v", withUID)
 	}
@@ -60,7 +60,7 @@ func TestZCodeActivityPreviewIsReadOnlyAndDegradesWithoutUserID(t *testing.T) {
 	}
 
 	// 无 user_id：活跃上报不可用，但端点仍成功返回投放，并用 warning 说明原因。
-	withoutUID := previewActivities(t, "zcode-without-uid.json")
+	withoutUID := previewActivities(t, "zcodeglobal-without-uid.json")
 	if !withoutUID.OK || len(withoutUID.Activities) != 1 {
 		t.Fatalf("without uid: %+v", withoutUID)
 	}

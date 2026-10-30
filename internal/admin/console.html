@@ -84,6 +84,10 @@ main { padding: 14px 20px 48px; }
 [hidden], [hidden="true"], [hidden=""] { display: none !important; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .row[hidden] { display: none !important; }
+/* 输入框宽度按份数表达（.grow 一份 / .grow-2 两份）。
+   以前写在内联 style 里，内联 specificity 最高，窄屏想改只能上 !important。 */
+.row > .grow { flex: 1 1 0; min-width: 0; }
+.row > .grow-2 { flex: 2 1 0; min-width: 0; }
 button.act { padding: 6.5px 13px; border: 1px solid var(--border-strong); border-radius: 9px;
              background: var(--card); color: var(--fg); cursor: pointer; font-size: 13px; font-weight: 550;
              transition: background .12s ease, border-color .12s ease, color .12s ease,
@@ -265,6 +269,48 @@ details.fold > summary::before { content: "\25B8"; font-size: 22px; line-height:
 details.fold[open] > summary::before { content: "\25BE"; }
 details.fold > summary:hover { color: var(--accent); }
 details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+
+/* 响应式：平板（≤900px）。桌面端（>900px）完全不受影响，以下只在窄屏生效。 */
+@media (max-width: 900px) {
+  header { margin: 10px 12px 0; padding: 13px 16px; }
+  header h1 { font-size: 17.5px; }
+  main { padding: 12px 12px 36px; }
+  .card { padding: 14px 15px; }
+  th, td { padding: 7px 8px; }
+  /* 账号表与扫描结果表在窄屏改为横向滚动，避免 8 列 nowrap 撑破视口。
+     滚动容器只包表格本身：#accounts 是纯表格容器，扫描结果表由 renderScans()
+     套一层 .table-scroll——加在整张 .card 上会把 <h2> 标题和错误行一起卷进滚动。
+     代价：这两张表在该断点下不再吸顶（overflow-x 会让 overflow-y 计算为 auto），
+     窄屏本来也没有吸顶价值。 */
+  #accounts, #scans .table-scroll { overflow-x: auto; }
+  #models table { min-width: 820px; }
+}
+
+/* 响应式：手机（≤640px）。 */
+@media (max-width: 640px) {
+  header { margin: 8px 8px 0; padding: 12px 14px; }
+  header h1 { font-size: 16px; }
+  header .sub { font-size: 11.5px; }
+  main { padding: 10px 8px 30px; }
+  .card { padding: 12px; }
+  .card h2 { font-size: 13.5px; margin-bottom: 10px; }
+  th, td { padding: 6.5px 7px; font-size: 12px; }
+  /* 输入框独占一行。宽度来源已是 .grow/.grow-2 而非内联样式，
+     属性选择器 specificity 更高，直接覆盖即可，无需 !important。
+     flex-basis 非 auto 时 width 不参与主轴尺寸计算，故不写 width。 */
+  .row > input[type=text], .row > input[type=password], .row > input[type=number],
+  .row > input[type=tel] {
+    flex: 1 1 100%;
+  }
+  /* select 嵌在 <label> 里：先让 label 可压缩，select 才跟着收窄，
+     否则 320px 下 #setPromptMode 会以 option 的自然宽度撑破视口。 */
+  .row > label { max-width: 100%; min-width: 0; }
+  .row select { max-width: 100%; min-width: 0; }
+  /* 按钮按内容均分，避免多个按钮各占一行显得松散。 */
+  .row > button.act { flex: 1 1 auto; min-width: 0; }
+  #models table { min-width: 720px; }
+}
+
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 </head>
@@ -280,7 +326,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   <div class="card" id="keyBox" hidden>
     <h2>管理密钥</h2>
     <div class="row">
-      <input type="password" id="keyInput" placeholder="填入 CPA 管理密钥（remote-management.secret-key）" style="flex:1;min-width:280px">
+      <input type="password" id="keyInput" placeholder="填入 CPA 管理密钥（remote-management.secret-key）" class="grow">
       <button class="act primary" id="btnUseKey">使用</button>
     </div>
     <div class="hint">
@@ -317,12 +363,12 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       <div class="card" id="smsBox" hidden>
         <h2 id="smsTitle">手机验证码登录</h2>
         <div class="row" style="margin-bottom:8px">
-          <input type="tel" id="inputSmsPhone" placeholder="手机号（11 位）" style="flex:2;min-width:240px">
+          <input type="tel" id="inputSmsPhone" placeholder="手机号（11 位）" class="grow-2">
           <button class="act" id="btnSmsSend">发送验证码</button>
         </div>
         <div class="row" style="margin-bottom:8px">
-          <input type="text" id="inputSmsCode" placeholder="6 位短信验证码" style="flex:1;min-width:160px" maxlength="6">
-          <input type="text" id="inputSmsLabel" placeholder="备注名称（可选）" style="flex:1;min-width:140px">
+          <input type="text" id="inputSmsCode" placeholder="6 位短信验证码" class="grow" maxlength="6">
+          <input type="text" id="inputSmsLabel" placeholder="备注名称（可选）" class="grow">
           <button class="act primary" id="btnSmsVerify">登录并添加</button>
           <button class="act" id="btnSmsCancel">取消</button>
         </div>
@@ -334,7 +380,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         <div class="row" id="loginVariantRow" hidden style="display:none"></div>
         <div class="login-captcha" id="loginCaptcha" hidden></div>
         <div class="row">
-          <input type="text" id="loginUrl" readonly style="flex:1;min-width:320px">
+          <input type="text" id="loginUrl" readonly class="grow">
           <button class="act" id="btnOpenUrl">打开链接</button>
           <button class="act" id="btnCopyUrl">复制</button>
           <button class="act" id="btnLoginCancel">取消</button>
@@ -356,8 +402,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       <div class="card" id="apiKeyBox" hidden>
         <h2 id="apiKeyTitle">添加 API Key 账号</h2>
         <div class="row" style="margin-bottom:8px">
-          <input type="password" id="inputApiKey" placeholder="输入 API Key（必填）" style="flex:2;min-width:280px">
-          <input type="text" id="inputApiLabel" placeholder="备注名称（可选）" style="flex:1;min-width:140px">
+          <input type="password" id="inputApiKey" placeholder="输入 API Key（必填）" class="grow-2">
+          <input type="text" id="inputApiLabel" placeholder="备注名称（可选）" class="grow">
           <button class="act primary" id="btnSubmitApiKey">保存账号</button>
           <button class="act" id="btnCancelApiKey">取消</button>
         </div>
@@ -431,7 +477,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       <h2>运行期设置</h2>
       <div class="row">
         <label><input type="checkbox" id="setAutoCheckin"> 每日自动签到</label>
-        <label>执行时间 <input type="text" id="setCheckinAt" placeholder="10:00" style="width:80px"></label>
+        <label>执行时间 <input type="text" id="setCheckinAt" placeholder="10:00" style="width:80px" title="按整点排程：分钟不为 0 时顺延到下一整点，不会早于该时刻执行"></label>
       </div>
       <div class="row" style="margin-top:8px">
         <label><input type="checkbox" id="setAutoTasks"> 每日自动任务</label>
@@ -449,8 +495,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         <label>模型名渠道标识
           <select id="setModelNameTag" style="margin-left:8px;padding:3px 6px">
             <option value="off">关闭（模型名保持原样）</option>
-            <option value="prefix">前缀（如 zcode-GLM-5.3）</option>
-            <option value="suffix">后缀（如 GLM-5.3-zcode）</option>
+            <option value="prefix">前缀（如 zcodeglobal-GLM-5.3）</option>
+            <option value="suffix">后缀（如 GLM-5.3-zcodeglobal）</option>
           </select>
         </label>
       </div>
@@ -2085,7 +2131,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
           row.appendChild(cell);
           table.appendChild(row);
         });
-        card.appendChild(table);
+        card.appendChild(el("div", null, "table-scroll")).appendChild(table);
       }
       host.appendChild(card);
     });

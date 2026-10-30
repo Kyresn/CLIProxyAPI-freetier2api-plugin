@@ -46,17 +46,38 @@ const (
 type pendingLogin struct {
 	FlowID    string
 	PollToken string
+	// VendorID 是发起登录的实例（zcodecn / zcodeglobal）。
+	VendorID string
+	// Region 是该实例的区域（cn / global），落盘时写进凭证。
+	Region string
+	// Provider 是本次登录使用的 OAuth provider（bigmodel / zai）。
+	Provider string
+	// Profile 是本次登录使用的设备档案：init/poll 的身份头与落盘凭证共用
+	// 同一份，登录链路与后续计费请求才不会像两台设备。
+	Profile DeviceProfile
 }
 
 // LoginStart 发起 OAuth 授权，返回用户需在浏览器打开的链接。
 //
+// vendorID / region 决定凭证归属（zcodecn + cn / zcodeglobal + global），
+// provider 决定授权页（bigmodel 国内 / zai 国际）。三者都打到 zcode.z.ai
+// 的设备授权流。
+//
 // 不接收上游基地址覆盖参数：OAuth 的 init/poll 固定在 zcode.z.ai，与对话
-// 通道（api.z.ai，可经 zcode_base_url 覆盖）是两个不同的域名。早期版本把
+// 通道（api.z.ai，可经 <实例ID>_base_url 覆盖）是两个不同的域名。早期版本把
 // 对话的覆盖值传进来，会让只想改对话地址的用户连带改坏登录链路。
-func LoginStart(ctx context.Context, logins core.LoginSessions) (*pluginapi.AuthLoginStartResponse, error) {
+func LoginStart(ctx context.Context, logins core.LoginSessions, vendorID, region, provider string) (*pluginapi.AuthLoginStartResponse, error) {
+	rawProvider := provider
+	provider = NormalizeProvider(rawProvider)
+	if provider == "" {
+		// 不回落 zai：国内实例配错时会静默走国际登录、拿到错渠道的凭证。
+		return nil, fmt.Errorf("未知的 ZCode 登录 provider：%q", rawProvider)
+	}
+	region = core.FirstNonEmpty(NormalizeRegion(region), RegionGlobal)
+	profile := NewDeviceProfile()
 	pollToken := NewHexID(32)
 
-	body, _ := json.Marshal(map[string]string{"provider": "zai"})
+	body, _ := json.Marshal(map[string]string{"provider": provider})
 	req, errNew := http.NewRequestWithContext(ctx, http.MethodPost,
 		ZCodeOrigin+PathOAuthInit, bytes.NewReader(body))
 	if errNew != nil {
@@ -64,6 +85,7 @@ func LoginStart(ctx context.Context, logins core.LoginSessions) (*pluginapi.Auth
 	}
 	req.Header.Set("Authorization", "Bearer "+pollToken)
 	req.Header.Set("Content-Type", "application/json")
+	applyLoginHeaders(req, profile)
 
 	resp, errDo := hostbridge.Client(ctx, loginHTTPTimeout).Do(req)
 	if errDo != nil {
@@ -98,9 +120,13 @@ func LoginStart(ctx context.Context, logins core.LoginSessions) (*pluginapi.Auth
 	effectiveToken := core.FirstNonEmpty(payload.Data.PollToken, pollToken)
 
 	sessionID := "zcode_" + NewHexID(8)
-	logins.Register(VendorID, sessionID, loginFlowTTL, loginPollInterval, &pendingLogin{
+	logins.Register(vendorID, sessionID, loginFlowTTL, loginPollInterval, &pendingLogin{
 		FlowID:    payload.Data.FlowID,
 		PollToken: effectiveToken,
+		VendorID:  vendorID,
+		Region:    region,
+		Provider:  provider,
+		Profile:   profile,
 	})
 
 	return &pluginapi.AuthLoginStartResponse{
@@ -138,6 +164,7 @@ func LoginPoll(ctx context.Context, logins core.LoginSessions, sessionID string)
 		return nil, fmt.Errorf("create poll request: %w", errNew)
 	}
 	req.Header.Set("Authorization", "Bearer "+pending.PollToken)
+	applyLoginHeaders(req, pending.Profile)
 
 	resp, errDo := hostbridge.Client(ctx, loginHTTPTimeout).Do(req)
 	if errDo != nil {
@@ -157,8 +184,20 @@ func LoginPoll(ctx context.Context, logins core.LoginSessions, sessionID string)
 			Token         string `json:"token"`
 			ZCodeJWTToken string `json:"zcodejwttoken"`
 			AccessToken   string `json:"access_token"`
-			Zai           struct {
-				AccessToken string `json:"access_token"`
+			User          struct {
+				UserID string `json:"user_id"`
+				ID     string `json:"id"`
+				Email  string `json:"email"`
+			} `json:"user"`
+			// bigmodel 是国内版登录的第三方 token；zai 是国际版。
+			// 两者不可互相替代，按本次 provider 优先取对应分支。
+			Bigmodel struct {
+				AccessToken    string `json:"access_token"`
+				AccessTokenAlt string `json:"accessToken"`
+			} `json:"bigmodel"`
+			Zai struct {
+				AccessToken    string `json:"access_token"`
+				AccessTokenAlt string `json:"accessToken"`
 			} `json:"zai"`
 		} `json:"data"`
 	}
@@ -197,21 +236,33 @@ func LoginPoll(ctx context.Context, logins core.LoginSessions, sessionID string)
 		return &pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusPending}, nil
 	}
 	logins.Delete(sessionID)
+	userID := core.FirstNonEmpty(payload.Data.User.UserID, payload.Data.User.ID, UserIDFromJWT(jwt))
+	email := core.FirstNonEmpty(strings.ToLower(strings.TrimSpace(payload.Data.User.Email)), EmailFromJWT(jwt))
 	cred := &Credential{
-		Vendor:   VendorID,
+		Vendor:   core.FirstNonEmpty(pending.VendorID, VendorIDGlobal),
 		JWTToken: jwt,
 		AuthMode: "oauth",
-		Profile:  NewDeviceProfile(),
-		Email:    EmailFromJWT(jwt),
-		UserID:   UserIDFromJWT(jwt),
+		Profile:  pending.Profile,
+		Email:    email,
+		UserID:   userID,
+		Region:   core.FirstNonEmpty(pending.Region, RegionGlobal),
+		Provider: pending.Provider,
 	}
 
 	// 兑换 API Key：作为备选凭证一并持久化。
 	// 兑换失败不阻断登录——JWT 仍可用于额度查询与套餐领取。
 	apiWarning := ""
-	// access_token 可能在 data 顶层或 data.zai 下，两处都收。
-	accessToken := core.FirstNonEmpty(payload.Data.Zai.AccessToken, payload.Data.AccessToken)
-	if accessToken != "" {
+	tokens := loginTokens{
+		TopLevel:    payload.Data.AccessToken,
+		Bigmodel:    payload.Data.Bigmodel.AccessToken,
+		BigmodelAlt: payload.Data.Bigmodel.AccessTokenAlt,
+		Zai:         payload.Data.Zai.AccessToken,
+		ZaiAlt:      payload.Data.Zai.AccessTokenAlt,
+	}
+	if cred.Provider == ProviderBigmodel {
+		// 国内版 token 属于智谱开放平台，不能拿去 api.z.ai 兑换，无需取值。
+		apiWarning = "（国内版使用 Start Plan JWT 凭证）"
+	} else if accessToken := tokens.pick(cred.Provider); accessToken != "" {
 		apiKey, errExchange := ExchangeAPIKey(ctx, accessToken)
 		if errExchange != nil {
 			apiWarning = fmt.Sprintf("（API Key 兑换失败：%v，已使用 Start Plan JWT 凭证）", errExchange)
@@ -244,6 +295,39 @@ func LoginPoll(ctx context.Context, logins core.LoginSessions, sessionID string)
 			StorageJSON: storage,
 		},
 	}, nil
+}
+
+// applyLoginHeaders 写入 OAuth init/poll 的客户端身份头。
+//
+// 只发身份辨识必需的 4 个：X-Platform 与落盘档案同源，避免登录请求与后续
+// 计费请求看起来像两台设备。
+func applyLoginHeaders(req *http.Request, profile DeviceProfile) {
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("HTTP-Referer", HTTPReferer)
+	req.Header.Set("X-ZCode-App-Version", ClientAppVersion)
+	req.Header.Set("X-Platform", profile.PlatformFull())
+}
+
+// loginTokens 是轮询回包里可能出现的第三方 access_token。
+//
+// 官方在不同 provider / 版本下把它放在不同位置，因此先原样收齐再按 provider
+// 取值；六个字符串参数容易在调用处张冠李戴，收敛成结构体后调用点自带字段名。
+type loginTokens struct {
+	TopLevel    string
+	Bigmodel    string
+	BigmodelAlt string
+	Zai         string
+	ZaiAlt      string
+}
+
+// pick 按登录 provider 优先取对应的第三方 access_token。
+//
+// bigmodel 登录回 data.bigmodel，zai 登录回 data.zai；另一分支只作兼容兜底。
+func (t loginTokens) pick(provider string) string {
+	if provider == ProviderBigmodel {
+		return core.FirstNonEmpty(t.Bigmodel, t.BigmodelAlt, t.Zai, t.ZaiAlt, t.TopLevel)
+	}
+	return core.FirstNonEmpty(t.Zai, t.ZaiAlt, t.Bigmodel, t.BigmodelAlt, t.TopLevel)
 }
 
 // ExchangeAPIKey 把 OAuth access_token 兑换为业务 API Key。
@@ -458,7 +542,7 @@ func decryptSecret(ctx context.Context, client *http.Client, bizToken, keyURL, a
 // zcodeFileName 生成凭证文件名（邮箱优先，便于辨识账号）。
 func zcodeFileName(cred *Credential) string {
 	seed := core.FirstNonEmpty(cred.Email, MaskedKey(core.FirstNonEmpty(cred.APIKey, cred.JWTToken)))
-	return fileNameFor(seed)
+	return fileNameFor(core.FirstNonEmpty(cred.Vendor, VendorID), seed)
 }
 
 // base64URLDecode 解 base64url（容忍缺省填充）。

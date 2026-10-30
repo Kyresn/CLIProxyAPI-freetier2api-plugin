@@ -34,12 +34,15 @@ If this project helps you, a Star would mean a lot.
 | `raccoon` | Raccoon (XiaoHuanXiong) | — | API Key | `raccoon-*.json` |
 | `opencodezen` | OpenCode ZEN | `global` | API Key | `opencodezen-*.json` |
 | `cline` | Cline | `global` | WorkOS Device Flow | `cline-*.json` |
-| `zcode` | ZCode | `global` | OAuth CLI Flow | `zcode-*.json` |
+| `zcodecn` | ZCode CN | `cn` | OAuth CLI Flow (BigModel) | `zcodecn-*.json` |
+| `zcodeglobal` | ZCode Global | `global` | OAuth CLI Flow (z.ai) | `zcodeglobal-*.json` |
 | `traecn` | Trae CN | `cn` | OAuth Flow | `traecn-*.json` |
 | `traeglobal` | Trae Global | `global` | OAuth Flow | `traeglobal-*.json` |
 | `codearts` | CodeArts | `cn` | OAuth Flow | `codearts-*.json` |
 | `minimaxcodecn` | MiniMax Code CN | `cn` | OAuth Device Flow | `minimaxcodecn-*.json` |
 | `minimaxcodeglobal` | MiniMax Code Global | `global` | OAuth Device Flow | `minimaxcodeglobal-*.json` |
+
+> Legacy ZCode credentials (`zcode-*.json`) still load: routed by `region`, defaulting to Global when absent, and the file name is kept unchanged. Existing `zcode:<model>` entries in `disabled_models` and model aliases keep resolving to `zcodeglobal` (only the global realm existed before the split).
 
 ## Quick Start
 
@@ -136,11 +139,11 @@ Configure under `plugins.configs.freetier2api` in `config.yaml` (runtime setting
 | --- | --- | --- | --- |
 | `enabled_realms` | string | `cn,global` | Enabled regions (`cn` / `global`) |
 | `auto_checkin` | bool | `true` | Enable automated daily check-in |
-| `auto_checkin_at` | string | `10:00` | Daily check-in time (`HH:MM`, local time) |
+| `auto_checkin_at` | string | `10:00` | Daily check-in time (`HH:MM`, local time). Scheduling is hourly, so any minute above 0 rounds up to the next hour and the run never fires before the configured time |
 | `auto_tasks` | bool | `true` | Enable automated daily tasks |
 | `checkin_history_limit` | int | `30` | Check-in records kept per account (`<=0` falls back to 30; expandable in the console) |
 | `prompt_mode` | string | `passthrough` | System prompt filter mode: `passthrough` / `custom` / `append` |
-| `model_name_tag` | string | `off` | Channel tag on model IDs: `off` (default) / `prefix` / `suffix`. When enabled, every vendor model gets a vendor prefix/suffix in its public ID (e.g. `zcode-GLM-5.3`) so same-name models can be pinned to a channel; tags are per-vendor, not per-account. Once tagged, same-name models are no longer merged across vendors. Takes effect after the host rebuilds its model registry (restart or credential reload; the console shows a restart-pending hint) |
+| `model_name_tag` | string | `off` | Channel tag on model IDs: `off` (default) / `prefix` / `suffix`. When enabled, every vendor model gets a vendor prefix/suffix in its public ID (e.g. `zcodeglobal-GLM-5.3`) so same-name models can be pinned to a channel; tags are per-vendor, not per-account. Once tagged, same-name models are no longer merged across vendors. Takes effect after the host rebuilds its model registry (restart or credential reload; the console shows a restart-pending hint) |
 | `disabled_models` | string / list | empty | Disabled models (`vendor:model` or bare name) |
 | `extra_models` | string | empty | Additional model IDs to register (comma-separated) |
 | `state_dir` | string | `~/.freetier2api-plugin` | State and cache directory |
