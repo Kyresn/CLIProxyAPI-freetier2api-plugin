@@ -351,6 +351,9 @@ var vendorRequiredFiles = []string{
 
 var vendorOptionalFiles = []string{
 	"tasks.go",
+	// machine.go 是设备身份解析（如 Qoder 的 runtime-info / machine_token）。
+	// 与 credential.go 分开：它要 spawn 官方组件、读本机缓存，属独立职责。
+	"machine.go",
 }
 
 var vendorDirNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*$`)

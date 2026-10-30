@@ -1,8 +1,22 @@
 package qoder
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+// disableLocalMachineIdentity 让本机自动解析确定性地「拿不到身份」。
+//
+// 测试不能依赖开发机是否装了 Qoder 客户端：否则同一个用例在不同机器上
+// 结果不同，而本机解析本身又需要 3.8 秒 spawn。
+func disableLocalMachineIdentity(t *testing.T) {
+	t.Helper()
+	t.Setenv("QODER_RUNTIME_INFO", filepath.Join(t.TempDir(), "missing-runtime-info"))
+	t.Setenv("QODER_MACHINE_TOKEN_PATH", filepath.Join(t.TempDir(), "missing-machine-token.json"))
+	resetLocalMachineIdentityCache()
+	t.Cleanup(resetLocalMachineIdentityCache)
+}
 
 // 本文件锁住设备身份的解析规则。
 //
@@ -76,7 +90,6 @@ func TestResolveIdentityRefusesHalfIdentity(t *testing.T) {
 		{"token only", &Credential{MachineToken: "tok"}, nil},
 		{"type only", &Credential{MachineType: "ty"}, nil},
 		{"token in cred, type in config", &Credential{MachineToken: "tok"}, map[string]string{"qoder_machine_type": ""}},
-		{"empty", nil, nil},
 	}
 	for _, testCase := range cases {
 		identity := ResolveIdentity(testCase.cred, testCase.raw)
@@ -98,16 +111,51 @@ func TestResolveIdentityPairsAcrossSources(t *testing.T) {
 	}
 }
 
-// TestResolveIdentityNeverDerives 覆盖：没有输入时绝不生成身份。
+// TestResolveIdentityNeverDerives 覆盖：没有用户身份且本机没有官方客户端时，
+// 绝不生成身份。
 //
 // 这条是本文件最重要的约束——派生值会让活动被上游整条过滤。
 func TestResolveIdentityNeverDerives(t *testing.T) {
+	disableLocalMachineIdentity(t)
 	identity := ResolveIdentity(&Credential{Token: "dt-some-account-token"}, map[string]string{})
 	if identity.Native() {
 		t.Errorf("没有用户提供的身份时不得自行生成: %+v", identity)
 	}
 	if identity.Version != DesktopVersion {
 		t.Errorf("version = %q, 期望默认 %q", identity.Version, DesktopVersion)
+	}
+}
+
+// TestResolveIdentityFallsBackToLocalMachineToken 覆盖：用户没提供身份时，
+// 使用本机官方客户端缓存的 machine_token.json（不是插件自己派生）。
+func TestResolveIdentityFallsBackToLocalMachineToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "machine_token.json")
+	if errWrite := os.WriteFile(path, []byte(`{"token":"local-tok","type":"local-type"}`), 0o600); errWrite != nil {
+		t.Fatalf("write fixture: %v", errWrite)
+	}
+	t.Setenv("QODER_RUNTIME_INFO", filepath.Join(t.TempDir(), "missing-runtime-info"))
+	t.Setenv("QODER_MACHINE_TOKEN_PATH", path)
+	resetLocalMachineIdentityCache()
+	t.Cleanup(resetLocalMachineIdentityCache)
+
+	identity := ResolveIdentity(nil, nil)
+	if identity.Token != "local-tok" || identity.Type != "local-type" {
+		t.Errorf("应使用本机官方身份: %+v", identity)
+	}
+}
+
+// TestParseRuntimeInfoOutput 覆盖：runtime-info 输出带前缀日志时仍能解析。
+func TestParseRuntimeInfoOutput(t *testing.T) {
+	identity, okIdentity := parseRuntimeInfoOutput(`log line
+{"machineToken":"rt-tok","machineType":"rt-type","machineCode":"rt-code","accountOutcome":"success"}`)
+	if !okIdentity {
+		t.Fatal("应解析出身份")
+	}
+	if identity.Token != "rt-tok" || identity.Type != "rt-type" || identity.Code != "rt-code" {
+		t.Errorf("解析结果不对: %+v", identity)
+	}
+	if _, okHalf := parseRuntimeInfoOutput(`{"machineToken":"only-token"}`); okHalf {
+		t.Error("缺少 machineType 时应视为无效")
 	}
 }
 
@@ -145,6 +193,7 @@ func TestNativeRequiresTokenAndType(t *testing.T) {
 //
 // 这是国内版能正常领取的前提——发了派生 token 反而会把活动过滤掉。
 func TestCheckinHeadersOmitMachineWhenUnavailable(t *testing.T) {
+	disableLocalMachineIdentity(t)
 	headers := checkinHeaders("dt-token", ResolveIdentity(nil, nil))
 	for _, key := range []string{"cosy-machinetoken", "cosy-machinetype", "cosy-machinecode", "cosy-machineid"} {
 		if value, okValue := headers[key]; okValue {

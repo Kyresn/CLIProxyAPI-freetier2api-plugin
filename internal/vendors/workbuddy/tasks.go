@@ -2067,22 +2067,38 @@ func (c *Client) GlobalDailyBonus(ctx context.Context, cred *Credential) (*Check
 	if !c.enabledRealm(region) {
 		return nil, fmt.Errorf("realm %s is disabled by plugin configuration", region)
 	}
-	today, lit, errToday := c.GrowthHeatmapToday(ctx, cred)
+	todayKey := time.Now().In(cstZone).Format("2006-01-02")
+	_, lit, errToday := c.GrowthHeatmapToday(ctx, cred)
 	if errToday != nil {
 		return nil, fmt.Errorf("heatmap: %w", errToday)
 	}
-	if today.Score > 0 {
+	// 必须按日期匹配「今天」，不能把最后一格当成今天：热力图顺序、
+	// 是否含今天都不是协议保证的。
+	if heatmapLitOn(lit, todayKey) {
 		return &CheckinResult{Already: true, Streak: int64(len(lit))}, nil
 	}
 	if errSend := c.SendDailyBonusBeacon(ctx, cred); errSend != nil {
 		return nil, fmt.Errorf("report: %w", errSend)
 	}
-	// 热力图聚合滞后数秒，立即回读可能仍是 0；尽力而为，仅用于日志展示，
-	// 当天状态以本条上报为准（下个排程点会看到点亮）。
+	// 热力图聚合滞后数秒，立即回读可能仍未点亮。当天状态以本条上报为准，
+	// 下个排程点会看到点亮；这里不因「尚未聚合」把签到判成失败。
 	if _, litAfter, errRe := c.GrowthHeatmapToday(ctx, cred); errRe == nil {
 		lit = litAfter
 	}
-	return &CheckinResult{Already: false, Streak: int64(len(lit))}, nil
+	return &CheckinResult{
+		Streak: int64(len(lit)),
+		Message: fmt.Sprintf("活跃信标已上报（已连续点亮 %d 天），奖励积分次日凌晨发放", len(lit)),
+	}, nil
+}
+
+// heatmapLitOn 报告热力图是否包含指定日期的点亮记录。
+func heatmapLitOn(lit []string, date string) bool {
+	for _, item := range lit {
+		if item == date {
+			return true
+		}
+	}
+	return false
 }
 
 // 本文件实现连登兑换与抽奖、猫猫旅行、夜猫子、开学季四套闭环。
@@ -2432,12 +2448,42 @@ type CheckinResult struct {
 	Energy int64
 	// Streak 是连续签到天数。
 	Streak int64
+	// NotRecorded 表示本次没有真正领到（活动未开启 / 领取处理中 / 无资格）。
+	NotRecorded bool
+	// Message 是上游给出的可读说明。
+	Message string
+}
+
+// checkinActivityStatus 是签到状态的权威来源。
+type checkinActivityStatus struct {
+	Active         bool  `json:"active"`
+	TodayCheckedIn bool  `json:"today_checked_in"`
+	StreakDays     int64 `json:"streak_days"`
+	DailyCredit    int64 `json:"daily_credit"`
+}
+
+// CheckinActivityStatus 查询签到活动状态（POST checkin-activity-status）。
+//
+// 这是「活动是否开启 / 今天是否已领」的权威判据；不要用 checkin-status，
+// 后者返回占位数据（active:false、checkin_dates:null）。
+func (c *Client) CheckinActivityStatus(cred *Credential) (*checkinActivityStatus, error) {
+	endpoints := GetEndpoints(cred.Realm())
+	data, errCall := c.billingJSON(cred, endpoints.BillingBase+checkinActivityStatusPath, http.MethodPost, map[string]any{})
+	if errCall != nil {
+		return nil, errCall
+	}
+	var status checkinActivityStatus
+	if errUnmarshal := json.Unmarshal(data, &status); errUnmarshal != nil {
+		return nil, fmt.Errorf("decode checkin activity status: %w", errUnmarshal)
+	}
+	return &status, nil
 }
 
 // DailyCheckin 执行每日签到。
 //
-// 「今天已签到」被识别为幂等成功：上游对重复签到返回业务错误，
-// 直接当失败会让自动签到任务每天报错一次。
+// 先查权威状态再领取：活动未开启 / 今日已领由状态接口判定，而不是把上游的
+// 业务拒绝当成失败。领取回执按业务码与文案分类——code=0 也可能表示「签到失败」，
+// 只有真正领到才记成功。
 func (c *Client) DailyCheckin(cred *Credential) (*CheckinResult, error) {
 	if cred == nil {
 		return nil, fmt.Errorf("credential is required")
@@ -2452,34 +2498,120 @@ func (c *Client) DailyCheckin(cred *Credential) (*CheckinResult, error) {
 		paths = []string{dailyCheckinPath, dailyCheckinPathV2}
 	}
 
+	// 状态预查失败不阻断领取：把瞬时故障当成「不能签到」会让账号整天漏签。
+	if status, errStatus := c.CheckinActivityStatus(cred); errStatus == nil && status != nil {
+		if !status.Active {
+			return &CheckinResult{NotRecorded: true, Message: "签到活动未开启"}, nil
+		}
+		if status.TodayCheckedIn {
+			return &CheckinResult{Already: true, Streak: status.StreakDays}, nil
+		}
+	}
+
 	var lastErr error
 	for _, path := range paths {
-		data, errCall := c.billingJSON(cred, endpoints.BillingBase+path, http.MethodPost, map[string]any{})
+		status, code, msg, data, raw, errCall := c.claimDailyCheckin(cred, endpoints.BillingBase+path)
 		if errCall != nil {
-			if IsAlreadyCheckin(errCall) {
-				return &CheckinResult{Already: true}, nil
-			}
 			lastErr = errCall
 			if upstreamErr, okErr := errCall.(*core.Failure); okErr && upstreamErr.Kind == core.FailureKindNotFound {
 				continue
 			}
 			return nil, errCall
 		}
+		switch {
+		case code == 10001 || code == 1001:
+			// 10001 不是「签到成功」专属码，但在这个端点上表示已领。
+			if containsAny(msg, []string{"失败"}) {
+				return nil, &core.Failure{Status: status, Code: fmt.Sprintf("%d", code), Msg: msg, Kind: core.FailureKindClient}
+			}
+			return &CheckinResult{Already: true, Message: msg}, nil
+		case code == 1002 || code == 1003:
+			// 1002 = 无资格，1003 = 活动结束：不是失败，也不是已签到。
+			return &CheckinResult{NotRecorded: true, Message: core.FirstNonEmpty(msg, "当前无领取资格")}, nil
+		case code != 0:
+			return nil, Classify(status, string(raw))
+		}
+		// code == 0：仍要看文案——上游会用 code=0 + 「签到失败」表达没签成。
+		if containsAny(msg, []string{"失败"}) {
+			return nil, &core.Failure{Status: status, Code: "0", Msg: msg, Kind: core.FailureKindClient}
+		}
+		if containsAny(msg, []string{"处理中", "请勿重复操作", "系统繁忙", "稍后再试"}) {
+			return &CheckinResult{NotRecorded: true, Message: msg}, nil
+		}
 		var payload struct {
-			Credit int64 `json:"credit"`
-			Energy int64 `json:"energy"`
-			Streak int64 `json:"streak"`
+			Credit    int64  `json:"credit"`
+			Energy    int64  `json:"energy"`
+			Streak    int64  `json:"streak"`
+			StreakAlt int64  `json:"streak_days"`
+			Message   string `json:"message"`
 		}
-		if errUnmarshal := json.Unmarshal(data, &payload); errUnmarshal != nil {
-			// 签到成功但响应结构不认识：仍算成功（副作用已发生）。
-			return &CheckinResult{}, nil
+		if len(data) > 0 {
+			if errUnmarshal := json.Unmarshal(data, &payload); errUnmarshal != nil {
+				return nil, fmt.Errorf("decode checkin result: %w", errUnmarshal)
+			}
 		}
-		return &CheckinResult{Credit: payload.Credit, Energy: payload.Energy, Streak: payload.Streak}, nil
+		return &CheckinResult{
+			Credit:  payload.Credit,
+			Energy:  payload.Energy,
+			Streak:  core.FirstNonZero(payload.Streak, payload.StreakAlt),
+			Message: core.FirstNonEmpty(payload.Message, msg),
+		}, nil
 	}
 	if lastErr != nil {
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("checkin endpoint is unavailable")
+}
+
+// claimDailyCheckin 发一次领取请求并返回原始信封字段。
+//
+// 不用 billingJSON：它在业务码非 0 时只返回分类错误，丢掉了 msg 与 data，
+// 而签到结果恰好要靠文案区分「已签到 / 处理中 / 失败」。
+func (c *Client) claimDailyCheckin(cred *Credential, url string) (status int, code int64, msg string, data json.RawMessage, raw []byte, err error) {
+	body, errMarshal := json.Marshal(map[string]any{})
+	if errMarshal != nil {
+		return 0, 0, "", nil, nil, errMarshal
+	}
+	req, errReq := http.NewRequestWithContext(c.opts.Context, http.MethodPost, url, strings.NewReader(string(body)))
+	if errReq != nil {
+		return 0, 0, "", nil, nil, fmt.Errorf("build checkin request: %w", errReq)
+	}
+	c.applyBillingHeaders(req, cred)
+
+	resp, errDo := c.shortClient().Do(req)
+	if errDo != nil {
+		return 0, 0, "", nil, nil, fmt.Errorf("checkin request: %w", errDo)
+	}
+	defer closeBody(resp.Body)
+	raw, errRead := io.ReadAll(io.LimitReader(resp.Body, apiBodyLimit))
+	if errRead != nil {
+		return resp.StatusCode, 0, "", nil, nil, fmt.Errorf("read checkin response: %w", errRead)
+	}
+	var envelope struct {
+		Code int64           `json:"code"`
+		Msg  string          `json:"msg"`
+		Data json.RawMessage `json:"data"`
+	}
+	if errUnmarshal := json.Unmarshal(raw, &envelope); errUnmarshal != nil {
+		if resp.StatusCode >= 400 {
+			return resp.StatusCode, 0, "", nil, raw, enrichClassifyError(resp.StatusCode, string(raw), resp.Header)
+		}
+		return resp.StatusCode, 0, "", nil, raw, fmt.Errorf("decode checkin response: %w", errUnmarshal)
+	}
+	if resp.StatusCode >= 400 && envelope.Code == 0 {
+		return resp.StatusCode, 0, envelope.Msg, envelope.Data, raw, enrichClassifyError(resp.StatusCode, string(raw), resp.Header)
+	}
+	return resp.StatusCode, envelope.Code, envelope.Msg, envelope.Data, raw, nil
+}
+
+// containsAny 报告 text 是否包含任一子串。
+func containsAny(text string, markers []string) bool {
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Balance 是账号的资源余额。

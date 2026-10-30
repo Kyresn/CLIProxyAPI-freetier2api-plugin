@@ -273,8 +273,10 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 		return nil, core.ToPluginError(errClaim)
 	}
 	return &core.CheckinResult{
-		Already: result.Already,
-		Message: result.Message,
+		Already:     result.Already,
+		Credit:      result.Credit,
+		Message:     result.Message,
+		NotRecorded: result.NotRecorded,
 	}, nil
 }
 

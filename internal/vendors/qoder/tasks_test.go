@@ -458,6 +458,74 @@ func TestCheckinAchievementGate(t *testing.T) {
 	}
 }
 
+// TestCheckinSkipsGatedCampaignAfterDailyClaimed 覆盖真实报障：
+// 今日每日活动已领，列表里同时还有一条「可领但成就未完成」的活动。
+// 后者不能被选中去领取，否则「今日已领取」会被误报成成就未完成。
+func TestCheckinSkipsGatedCampaignAfterDailyClaimed(t *testing.T) {
+	now := checkinOpenNow(t)
+	startAt, endAt, _, _ := roundWindow(t, now)
+	daily := claimedCampaign("camp-daily", "act-20261027-334", startAt, endAt)
+	gated := fmt.Sprintf(`{"campaignId":"camp-gated","campaignKey":"act-milktea","actionType":"CLAIM_BENEFIT",`+
+		`"claimStatus":"CLAIMABLE","startAt":%d,"endAt":%d,`+
+		`"requiredAchievementKey":"sites_first_use","achievementCompleted":false,`+
+		`"benefit":{"kind":"CREDITS","amount":100}}`, startAt, endAt)
+	upstream := &stubUpstream{responses: map[string]testhostResponse{}}
+	upstream.responses["GET https://openapi.qoder.com.cn/sash/api/v1/me/campaigns"] = testhostResponse{
+		status: http.StatusOK,
+		body:   campaignsBody(daily, gated),
+	}
+	upstream.responses["GET https://openapi.qoder.com.cn/sash/api/v1/me/daily-check-in/status"] = testhostResponse{
+		status: http.StatusOK,
+		body:   `{"status":"DISABLED"}`,
+	}
+	installStubHost(t, upstream)
+
+	result, errCheckin := Checkin(context.Background(), &Credential{Token: "dt-test", Region: RegionCN}, MachineIdentity{})
+	if errCheckin != nil {
+		t.Fatalf("Checkin 返回错误: %v", errCheckin)
+	}
+	if result.Status != CheckinAlreadyClaimed {
+		t.Fatalf("状态 = %q, 期望 %q（消息：%s）", result.Status, CheckinAlreadyClaimed, result.Message)
+	}
+	for _, request := range upstream.requests {
+		if request.method == http.MethodPost && strings.Contains(request.url, "/claim") {
+			t.Fatalf("今日已领取时不应再发 claim，实际请求 %s", request.url)
+		}
+	}
+}
+
+// TestCheckinClaimRejectedByAchievement 覆盖：领取响应直接返回成就未完成。
+func TestCheckinClaimRejectedByAchievement(t *testing.T) {
+	now := checkinOpenNow(t)
+	startAt, endAt, _, _ := roundWindow(t, now)
+	const campaignID = "camp-achievement-claim"
+	upstream := &stubUpstream{responses: map[string]testhostResponse{}}
+	upstream.responses["GET https://openapi.qoder.com.cn/sash/api/v1/me/campaigns"] = testhostResponse{
+		status: http.StatusOK,
+		body:   campaignsBody(claimableCampaign(campaignID, "act-milktea", startAt, endAt)),
+	}
+	upstream.responses["POST https://openapi.qoder.com.cn/sash/api/v1/me/campaigns/"+campaignID+"/claim"] = testhostResponse{
+		status: http.StatusOK,
+		body:   `{"status":"ACHIEVEMENT_NOT_COMPLETED","failureCode":"ACHIEVEMENT_NOT_COMPLETED"}`,
+	}
+	upstream.responses["GET https://openapi.qoder.com.cn/sash/api/v1/me/daily-check-in/status"] = testhostResponse{
+		status: http.StatusOK,
+		body:   `{"status":"DISABLED"}`,
+	}
+	installStubHost(t, upstream)
+
+	result, errCheckin := Checkin(context.Background(), &Credential{Token: "dt-test", Region: RegionCN}, MachineIdentity{})
+	if errCheckin != nil {
+		t.Fatalf("Checkin 返回错误: %v", errCheckin)
+	}
+	if !result.NotRecorded {
+		t.Error("领取被成就拒绝时不应落库")
+	}
+	if !strings.Contains(result.Message, "成就") {
+		t.Errorf("消息应说明成就门槛，实际 = %s", result.Message)
+	}
+}
+
 // TestCheckinGlobalRegionUsesGlobalEndpoint 覆盖：国际版走国际版域名。
 //
 // 国际版与国内版共用同一套 campaigns 活动（官方文档与官方活动页均确认），

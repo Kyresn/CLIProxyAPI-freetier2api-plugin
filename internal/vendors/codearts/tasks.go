@@ -1,11 +1,13 @@
 package codearts
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,11 +20,319 @@ type CheckinResult struct {
 	Already bool
 	Credit  int64
 	Message string
+	// NotRecorded 表示本次没有真正领到积分（未开通 / 无活动 / 不可领取）。
+	// 调用方不应把它记成「今日已签到」。
+	NotRecorded bool
 }
 
 func SupportsCheckin() bool {
 	return true
 }
+
+// ---- 每日签到（积分活动）----
+//
+// 协议来自对码道 IDE 的逆向与参考实现：
+//   GET  {snap}/snap-manager/v1/statistics/plugin      账户/套餐（判断积分账户）
+//   GET  {snap}/v1/ops/delivery?channel=IDE            活动列表
+//   POST {snap}/v1/ops/claim   {campaignId, channel}   领取
+//   POST {snap}/v1/ops/confirm {campaignId}            确认（响应 data.id 非空时）
+//
+// 该协议没有幂等键、也没有「今天已签到」业务码，幂等只能靠活动列表预检。
+
+// accountInfo 是账户/套餐信息里签到与额度需要的字段。
+type accountInfo struct {
+	Package struct {
+		IsCreditPackage bool   `json:"is_credit_package"`
+		IsTokenPackage  bool   `json:"is_token_package"`
+		Status          string `json:"status"`
+		SpecCode        string `json:"spec_code"`
+		PackageNameCN   string `json:"package_name_cn"`
+		PackageNameEN   string `json:"package_name_en"`
+	} `json:"package"`
+	Metrics []accountMetric `json:"metrics"`
+}
+
+// accountMetric 是 statistics/plugin 里的一项额度指标。
+//
+// 字段名来自 IDE 逆向：package_credit_amount / used / remain。数值可能是
+// 数字或数字字符串，故用 any 承接后统一解析。
+type accountMetric struct {
+	Name   string `json:"name"`
+	Amount any    `json:"package_credit_amount"`
+	Used   any    `json:"package_credit_used"`
+	Remain any    `json:"package_credit_remain"`
+}
+
+// creditMetricLabels 是积分指标名到展示名的映射。
+var creditMetricLabels = map[string]string{
+	"usageTotalPackageCredit":    "总积分包",
+	"usageBasicPackageCredit":    "基础积分包",
+	"usageOnDemandPackageCredit": "按需积分包",
+	"usageBonusPackageCredit":    "赠送积分包",
+}
+
+// totalCreditMetric 是总额指标名（其余分类是它的构成明细，不能重复累加）。
+const totalCreditMetric = "usageTotalPackageCredit"
+
+// opsActivity 是活动列表里的每日签到条目。
+type opsActivity struct {
+	CampaignID string
+	Type       string
+	Claimable  bool
+	Status     string
+	Amount     int64
+}
+
+// claimedStatuses 是活动已领取 / 已核销的状态值（IDE 据此禁用领取按钮）。
+var claimedStatuses = map[string]bool{"CLAIMED": true, "CONFIRMED": true, "CONSUMED": true}
+
+// Checkin 执行每日签到（积分活动）。
+func Checkin(ctx context.Context, cred *Credential) (*CheckinResult, error) {
+	if cred == nil || cred.AccessKeyID == "" {
+		return nil, fmt.Errorf("credential is nil or missing ak")
+	}
+
+	info, errInfo := fetchAccountInfo(ctx, cred)
+	if errInfo != nil {
+		// 账户信息查不到时不能直接判失败：Token 计费账户本来就不在积分活动
+		// 范围，仍可能走福利 Token 通道。兜底也失败时再报原始错误。
+		if result, errFallback := claimBenefitTokenFallback(ctx, cred, false); errFallback == nil {
+			return result, nil
+		}
+		return nil, errInfo
+	}
+	if !info.Package.IsCreditPackage {
+		// Token 计费账户不在积分活动范围，但仍可能有每日免费福利 Token。
+		return claimBenefitTokenFallback(ctx, cred, info.Package.IsTokenPackage)
+	}
+
+	activity, errActivity := fetchDailyActivity(ctx, cred)
+	if errActivity != nil {
+		return nil, errActivity
+	}
+	if activity == nil {
+		return &CheckinResult{Already: true, NotRecorded: true, Message: "未找到每日签到活动"}, nil
+	}
+	if !activity.Claimable {
+		if claimedStatuses[strings.ToUpper(activity.Status)] {
+			return &CheckinResult{Already: true, Message: "今天已领取"}, nil
+		}
+		return &CheckinResult{
+			Already:     true,
+			NotRecorded: true,
+			Message:     fmt.Sprintf("当前不可领取（status=%s）", activity.Status),
+		}, nil
+	}
+	if activity.CampaignID == "" {
+		return nil, fmt.Errorf("签到活动缺少 campaignId，无法领取")
+	}
+
+	claim, errClaim := claimOps(ctx, cred, activity.CampaignID)
+	if errClaim != nil {
+		return nil, errClaim
+	}
+	// 服务端要求确认时才补 confirm（判据：响应 data.id 非空）。确认失败不改变
+	// 「已领取」的事实：积分已进入待确认态，报失败会让用户重复点击。
+	if claim.benefitID != "" {
+		_, _ = signedSnapJSON(ctx, http.MethodPost, SnapEngineApiHost+EpOpsConfirm, cred,
+			[]byte(`{"campaignId":"`+jsonEscape(activity.CampaignID)+`"}`))
+	}
+
+	credit := claim.credit
+	if credit == 0 {
+		credit = activity.Amount
+	}
+	message := "签到成功"
+	if credit > 0 {
+		message = fmt.Sprintf("签到成功 +%d 积分", credit)
+	}
+	return &CheckinResult{Credit: credit, Message: message}, nil
+}
+
+// opsClaimResult 是一次领取响应的关键字段。
+type opsClaimResult struct {
+	credit    int64
+	benefitID string
+}
+
+// claimOps 调用 /v1/ops/claim，body 与官方客户端逐字节一致。
+func claimOps(ctx context.Context, cred *Credential, campaignID string) (*opsClaimResult, error) {
+	body := []byte(`{"campaignId":"` + jsonEscape(campaignID) + `","channel":"` + OpsChannel + `"}`)
+	data, errClaim := signedSnapJSON(ctx, http.MethodPost, SnapEngineApiHost+EpOpsClaim, cred, body)
+	if errClaim != nil {
+		return nil, errClaim
+	}
+	result := &opsClaimResult{
+		credit: firstInt(data, "benefitAmount", "credit", "credits", "creditAmount", "amount"),
+	}
+	if id, okID := data["id"]; okID && id != nil {
+		if text := strings.TrimSpace(fmt.Sprintf("%v", id)); text != "" && text != "null" {
+			result.benefitID = text
+		}
+	}
+	return result, nil
+}
+
+// fetchAccountInfo 查询账户/套餐信息（判断是否积分计费账户）。
+func fetchAccountInfo(ctx context.Context, cred *Credential) (*accountInfo, error) {
+	data, errFetch := signedSnapJSON(ctx, http.MethodGet, SnapEngineApiHost+EpPackageInfo, cred, nil)
+	if errFetch != nil {
+		return nil, fmt.Errorf("账户信息查询失败: %w", errFetch)
+	}
+	encoded, _ := json.Marshal(data)
+	var info accountInfo
+	if errDecode := json.Unmarshal(encoded, &info); errDecode != nil {
+		return nil, fmt.Errorf("decode account info: %w", errDecode)
+	}
+	return &info, nil
+}
+
+// fetchDailyActivity 查询活动列表并挑出每日登录领取条目。
+func fetchDailyActivity(ctx context.Context, cred *Credential) (*opsActivity, error) {
+	url := SnapEngineApiHost + EpOpsDelivery + "?channel=" + OpsChannel
+	data, errFetch := signedSnapJSON(ctx, http.MethodGet, url, cred, nil)
+	if errFetch != nil {
+		return nil, fmt.Errorf("活动列表查询失败: %w", errFetch)
+	}
+	items, okItems := data["items"].([]any)
+	if !okItems {
+		return nil, fmt.Errorf("活动列表响应缺少 items 字段")
+	}
+	for _, item := range items {
+		record, okRecord := item.(map[string]any)
+		if !okRecord || text(record, "type") != OpsDailyLoginType {
+			continue
+		}
+		return &opsActivity{
+			CampaignID: identifier(record, "campaignId"),
+			Type:       text(record, "type"),
+			Claimable:  boolValue(record, "claimable"),
+			Status:     text(record, "status"),
+			Amount:     firstInt(record, "benefitAmount", "amount", "creditAmount"),
+		}, nil
+	}
+	return nil, nil
+}
+
+// signedSnapJSON 发一次 snap-access 签名请求并解开 {code,message,data} 信封。
+func signedSnapJSON(ctx context.Context, method, url string, cred *Credential, body []byte) (map[string]any, error) {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, errReq := http.NewRequestWithContext(ctx, method, url, reader)
+	if errReq != nil {
+		return nil, errReq
+	}
+	signSnapRequest(req, body, cred)
+
+	resp, errDo := hostbridge.Client(ctx, 20*time.Second).Do(req)
+	if errDo != nil {
+		return nil, fmt.Errorf("snap request failed: %w", errDo)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	raw, errRead := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if errRead != nil {
+		return nil, fmt.Errorf("read snap response: %w", errRead)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("snap response %d: %s", resp.StatusCode, describeSnapError(raw))
+	}
+	var envelope map[string]any
+	if errDecode := json.Unmarshal(raw, &envelope); errDecode != nil {
+		return nil, fmt.Errorf("decode snap response: %w", errDecode)
+	}
+	if code, okCode := envelope["code"].(float64); okCode && code != 0 {
+		message := core.FirstNonEmpty(text(envelope, "message"), text(envelope, "msg"))
+		if message == "" {
+			message = fmt.Sprintf("业务码 %v", code)
+		}
+		return nil, fmt.Errorf("snap business error: %s", message)
+	}
+	if data, okData := envelope["data"].(map[string]any); okData {
+		return data, nil
+	}
+	return envelope, nil
+}
+
+// describeSnapError 从华为网关错误体里取出真正原因（APIG.xxxx + error_msg）。
+func describeSnapError(raw []byte) string {
+	var payload struct {
+		ErrorCode string `json:"error_code"`
+		ErrorMsg  string `json:"error_msg"`
+	}
+	if errUnmarshal := json.Unmarshal(raw, &payload); errUnmarshal == nil &&
+		(payload.ErrorCode != "" || payload.ErrorMsg != "") {
+		return strings.TrimSpace(payload.ErrorCode + " " + payload.ErrorMsg)
+	}
+	return core.Truncate(string(raw), 200)
+}
+
+// text / boolValue / identifier / firstInt 是对上游 JSON 的宽容取值助手。
+func text(source map[string]any, key string) string {
+	value, okValue := source[key].(string)
+	if !okValue {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func boolValue(source map[string]any, key string) bool {
+	switch value := source[key].(type) {
+	case bool:
+		return value
+	case string:
+		return strings.EqualFold(strings.TrimSpace(value), "true")
+	}
+	return false
+}
+
+// identifier 把标识符字段统一成字符串（服务端可能下发数字，如 campaignId=1）。
+func identifier(source map[string]any, key string) string {
+	switch value := source[key].(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case float64:
+		return fmt.Sprintf("%.0f", value)
+	case json.Number:
+		return value.String()
+	}
+	return ""
+}
+
+// firstInt 按候选键顺序取第一个非零整数（兼容数字字符串）。
+func firstInt(source map[string]any, keys ...string) int64 {
+	for _, key := range keys {
+		if parsed := intFromAny(source[key]); parsed != 0 {
+			return parsed
+		}
+	}
+	return 0
+}
+
+// intFromAny 宽容解析整数：数字、json.Number 与数字字符串。
+func intFromAny(value any) int64 {
+	if text, okText := value.(string); okText {
+		parsed, errParse := strconv.ParseFloat(strings.TrimSpace(text), 64)
+		if errParse != nil {
+			return 0
+		}
+		return int64(parsed)
+	}
+	return int64(core.IntFromAny(value))
+}
+
+// jsonEscape 把字符串转成 JSON 字符串字面量内容（不含引号）。
+func jsonEscape(value string) string {
+	encoded, _ := json.Marshal(value)
+	return strings.Trim(string(encoded), `"`)
+}
+
+// ---- Token 计费账户的福利 Token 兜底 ----
+//
+// 积分活动只对「已升级到积分计费模式」的账号开放。Token 计费账户仍走旧的
+// 福利 Token 通道（每日 1000 万），两条链路互不替代。
 
 // BenefitGatewayStatus 报告福利通道是否开放。
 type BenefitGatewayStatus struct {
@@ -31,53 +341,32 @@ type BenefitGatewayStatus struct {
 	ExaminationModelEnabled bool `json:"examination_model_enable"`
 }
 
-// FetchBenefitGatewayStatus 查询福利通道是否开放。
-//
-// 端点在 **snap 主机**上而不是 benefit 主机（放错主机只会拿到 404）。
-func FetchBenefitGatewayStatus(ctx context.Context, cred *Credential) (*BenefitGatewayStatus, error) {
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodGet, SnapEngineApiHost+EpBenefitGateway, nil)
-	if errReq != nil {
-		return nil, errReq
-	}
-	req.Header.Set("Agent-Type", "PromptCenter")
-	signHuaweiRequest(req, nil, cred)
-
-	client := hostbridge.Client(ctx, 20*time.Second)
-	resp, errDo := client.Do(req)
-	if errDo != nil {
-		return nil, fmt.Errorf("codearts benefit gateway status failed: %w", errDo)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode >= 400 {
-		return nil, Classify(resp.StatusCode, string(body))
-	}
-	var status BenefitGatewayStatus
-	if err := json.Unmarshal(body, &status); err != nil {
-		return nil, fmt.Errorf("decode benefit gateway status: %w", err)
-	}
-	return &status, nil
+// BenefitClaim 是一次福利领取的结果。
+type BenefitClaim struct {
+	Channel  string `json:"channel"`
+	UserID   string `json:"user_id"`
+	UserName string `json:"user_name"`
 }
 
-// Checkin 执行每日福利领取。
-//
-// 领取接口是**幂等 GET**（官方客户端开着 IDE 时已经替我们领过，这里是换账号/
-// 跨天/没开 IDE 时的兜底），所以重复签到不会出事。
-func Checkin(ctx context.Context, cred *Credential) (*CheckinResult, error) {
-	if cred == nil || cred.AccessKeyID == "" {
-		return nil, fmt.Errorf("credential is nil or missing ak")
-	}
-
-	status, errStatus := FetchBenefitGatewayStatus(ctx, cred)
+// claimBenefitTokenFallback 为 Token 计费账户领取每日免费福利 Token。
+func claimBenefitTokenFallback(ctx context.Context, cred *Credential, isTokenAccount bool) (*CheckinResult, error) {
+	status, errStatus := fetchBenefitGatewayStatus(ctx, cred)
 	if errStatus != nil {
-		return nil, errStatus
+		// 福利通道查询失败时，至少把「不在积分活动范围」的事实说清楚。
+		prefix := "非积分计费账户"
+		if isTokenAccount {
+			prefix = "Token 计费账户"
+		}
+		return nil, fmt.Errorf("%s，且福利通道查询失败: %w", prefix, errStatus)
 	}
 	if !status.Enabled {
-		return &CheckinResult{Already: true, Message: "当前账号未开放免费福利 Token 活动"}, nil
+		return &CheckinResult{
+			Already:     true,
+			NotRecorded: true,
+			Message:     "当前账号未开放每日签到（既不是积分计费账户，也无福利 Token 活动）",
+		}, nil
 	}
-
-	claim, errClaim := ClaimBenefit(ctx, cred)
+	claim, errClaim := claimBenefitToken(ctx, cred)
 	if errClaim != nil {
 		return nil, errClaim
 	}
@@ -88,15 +377,34 @@ func Checkin(ctx context.Context, cred *Credential) (*CheckinResult, error) {
 	return &CheckinResult{Message: message}, nil
 }
 
-// BenefitClaim 是一次福利领取的结果。
-type BenefitClaim struct {
-	Channel  string `json:"channel"`
-	UserID   string `json:"user_id"`
-	UserName string `json:"user_name"`
+// fetchBenefitGatewayStatus 查询福利通道是否开放（snap 主机）。
+func fetchBenefitGatewayStatus(ctx context.Context, cred *Credential) (*BenefitGatewayStatus, error) {
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodGet, SnapEngineApiHost+EpBenefitGateway, nil)
+	if errReq != nil {
+		return nil, errReq
+	}
+	req.Header.Set("Agent-Type", "PromptCenter")
+	signHuaweiRequest(req, nil, cred)
+
+	resp, errDo := hostbridge.Client(ctx, 20*time.Second).Do(req)
+	if errDo != nil {
+		return nil, fmt.Errorf("codearts benefit gateway status failed: %w", errDo)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 400 {
+		return nil, Classify(resp.StatusCode, string(body))
+	}
+	var status BenefitGatewayStatus
+	if errUnmarshal := json.Unmarshal(body, &status); errUnmarshal != nil {
+		return nil, fmt.Errorf("decode benefit gateway status: %w", errUnmarshal)
+	}
+	return &status, nil
 }
 
-// ClaimBenefit 调用福利领取入口（幂等 GET）。
-func ClaimBenefit(ctx context.Context, cred *Credential) (*BenefitClaim, error) {
+// claimBenefitToken 调用福利领取入口（幂等 GET）。
+func claimBenefitToken(ctx context.Context, cred *Credential) (*BenefitClaim, error) {
 	req, errReq := http.NewRequestWithContext(ctx, http.MethodGet, BenefitHost+EpBenefitClaim, nil)
 	if errReq != nil {
 		return nil, errReq
@@ -104,8 +412,7 @@ func ClaimBenefit(ctx context.Context, cred *Credential) (*BenefitClaim, error) 
 	req.Header.Set("Agent-Type", "PromptCenter")
 	signHuaweiRequest(req, nil, cred)
 
-	client := hostbridge.Client(ctx, 20*time.Second)
-	resp, errDo := client.Do(req)
+	resp, errDo := hostbridge.Client(ctx, 20*time.Second).Do(req)
 	if errDo != nil {
 		return nil, fmt.Errorf("codearts claim benefit failed: %w", errDo)
 	}
@@ -115,7 +422,6 @@ func ClaimBenefit(ctx context.Context, cred *Credential) (*BenefitClaim, error) 
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("claim benefit response %d: %s", resp.StatusCode, DescribeClaimError(string(body)))
 	}
-
 	var envelope struct {
 		ErrorCode string `json:"error_code"`
 		ErrorMsg  string `json:"error_msg"`
@@ -125,10 +431,9 @@ func ClaimBenefit(ctx context.Context, cred *Credential) (*BenefitClaim, error) 
 			UserName string `json:"user_name"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("decode claim benefit response: %w", err)
+	if errUnmarshal := json.Unmarshal(body, &envelope); errUnmarshal != nil {
+		return nil, fmt.Errorf("decode claim benefit response: %w", errUnmarshal)
 	}
-	// 0000 是成功码；当天已领过仍返回 0000（幂等）。
 	if envelope.ErrorCode != "" && envelope.ErrorCode != "0000" {
 		return nil, fmt.Errorf("claim benefit %s: %s", envelope.ErrorCode, DescribeClaimError(envelope.ErrorMsg))
 	}
@@ -156,20 +461,31 @@ func DescribeClaimError(message string) string {
 	return message
 }
 
-// FetchQuota 查询每日免费福利 Token 的额度与已用量。
+// FetchQuota 查询账号额度。
 //
-// 只报福利通道的数字：订阅积分不在本插件支持范围内，也不该用一个写死的
-// 「状态正常」冒充真实额度。
-//
-// 指标键必须用 remaining / total / used 这些**标准键**：控制台的「剩余 / 总额」
-// 只认它们（internal/auth.Totals），自定义键会被忽略，列里就永远是 0/0。
+// 积分计费账户用 statistics/plugin 的 metrics（与签到同一套 snap 协议）；
+// 福利 Token 接口只适用于 Token 计费账户。此前对所有账号都打福利接口，
+// 积分账户会得到 `4000 invalid channel, group not found`，额度永远刷不出来。
 func FetchQuota(ctx context.Context, cred *Credential) (*pluginapi.QuotaFetchResponse, error) {
 	if cred == nil || cred.AccessKeyID == "" {
 		return nil, fmt.Errorf("credential is nil or missing ak")
 	}
 
+	info, errInfo := fetchAccountInfo(ctx, cred)
+	if errInfo == nil && info.Package.IsCreditPackage {
+		if quota, okQuota := creditQuota(info); okQuota {
+			return quota, nil
+		}
+		// 积分账户但上游没下发任何积分指标：如实显示 0，而不是回退到
+		// 不适用的福利接口（那只会得到 invalid channel）。
+		return noCreditQuota(info), nil
+	}
+
 	balance, errBalance := fetchBenefitBalance(ctx, cred)
 	if errBalance != nil {
+		if errInfo != nil {
+			return nil, fmt.Errorf("账户信息查询失败: %w", errInfo)
+		}
 		return nil, errBalance
 	}
 	if balance == nil {
@@ -201,6 +517,113 @@ func FetchQuota(ctx context.Context, cred *Credential) (*pluginapi.QuotaFetchRes
 			{Key: "benefit_monthly_remaining", Label: "本月剩余", Value: float64(monthlyLeft)},
 		},
 	}, nil
+}
+
+// creditQuota 把 statistics/plugin 的 metrics 转成宿主的额度结构。
+//
+// 总额取 usageTotalPackageCredit（分类是它的构成明细，不能重复累加）；
+// 总额缺失时才回退为分类求和。没有任何积分指标时 ok=false。
+func creditQuota(info *accountInfo) (*pluginapi.QuotaFetchResponse, bool) {
+	if info == nil {
+		return nil, false
+	}
+	var (
+		totalAmount, totalUsed, totalRemain float64
+		sawTotal                            bool
+		sawMetric                           bool
+		sumAmount, sumUsed, sumRemain       float64
+	)
+	buckets := make([]pluginapi.QuotaBucket, 0, len(info.Metrics))
+	for _, metric := range info.Metrics {
+		label, okLabel := creditMetricLabels[strings.TrimSpace(metric.Name)]
+		if !okLabel {
+			continue
+		}
+		sawMetric = true
+		amount := metricFloat(metric.Amount)
+		used := metricFloat(metric.Used)
+		remain := metricFloat(metric.Remain)
+		sumAmount += amount
+		sumUsed += used
+		sumRemain += remain
+		if strings.TrimSpace(metric.Name) == totalCreditMetric {
+			totalAmount, totalUsed, totalRemain = amount, used, remain
+			sawTotal = true
+		}
+		// 额度为 0 的分类不列资源包：列出来只会让「N 个资源包」虚高。
+		if amount <= 0 && remain <= 0 {
+			continue
+		}
+		fraction := 0.0
+		if amount > 0 {
+			fraction = core.ClampFraction(remain / amount)
+		}
+		buckets = append(buckets, pluginapi.QuotaBucket{
+			Window:            label,
+			RemainingFraction: fraction,
+			Description:       fmt.Sprintf("剩余 %.2f / 总额 %.2f", remain, amount),
+		})
+	}
+	if !sawMetric {
+		return nil, false
+	}
+	if !sawTotal {
+		totalAmount, totalUsed, totalRemain = sumAmount, sumUsed, sumRemain
+	}
+	response := &pluginapi.QuotaFetchResponse{
+		Subscription: &pluginapi.QuotaSubscription{
+			Plan:     "CodeArts 积分",
+			TierName: core.FirstNonEmpty(info.Package.PackageNameCN, info.Package.PackageNameEN, "积分计费"),
+			TierID:   core.FirstNonEmpty(info.Package.SpecCode, "credit"),
+		},
+		Summary: []pluginapi.QuotaMetric{
+			{Key: "total", Label: "积分总额", Value: totalAmount},
+			{Key: "remaining", Label: "剩余积分", Value: totalRemain},
+			{Key: "used", Label: "已用积分", Value: totalUsed},
+		},
+	}
+	if len(buckets) > 0 {
+		response.Groups = []pluginapi.QuotaGroup{{
+			DisplayName: "积分包明细",
+			Buckets:     buckets,
+		}}
+	}
+	return response, true
+}
+
+// noCreditQuota 是积分账户但上游未返回指标时的额度结果。
+func noCreditQuota(info *accountInfo) *pluginapi.QuotaFetchResponse {
+	tierName := "积分计费"
+	specCode := "credit"
+	if info != nil {
+		tierName = core.FirstNonEmpty(info.Package.PackageNameCN, info.Package.PackageNameEN, tierName)
+		specCode = core.FirstNonEmpty(info.Package.SpecCode, specCode)
+	}
+	return &pluginapi.QuotaFetchResponse{
+		Subscription: &pluginapi.QuotaSubscription{Plan: "CodeArts 积分", TierName: tierName, TierID: specCode},
+		Summary: []pluginapi.QuotaMetric{
+			{Key: "total", Label: "积分总额（上游未返回积分指标）", Value: 0},
+			{Key: "remaining", Label: "剩余积分", Value: 0},
+			{Key: "used", Label: "已用积分", Value: 0},
+		},
+	}
+}
+
+// metricFloat 宽容解析指标数值（数字 / json.Number / 数字字符串）。
+func metricFloat(value any) float64 {
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case json.Number:
+		parsed, _ := typed.Float64()
+		return parsed
+	case string:
+		parsed, errParse := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		if errParse == nil {
+			return parsed
+		}
+	}
+	return 0
 }
 
 // noBenefitQuota 是「账号没有福利权益」时的额度结果。
