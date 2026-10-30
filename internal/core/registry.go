@@ -18,11 +18,16 @@ type Registry struct {
 	mu    sync.RWMutex
 	order []string
 	byID  map[string]Vendor
+	// legacy 是「拆分前的旧 vendorID」→「它演变成的实例 ID」。
+	//
+	// 只由实现了 LegacyIDReporter 的实例在 Register 时登记；用于让用户在
+	// disabled_models / 模型别名里写的旧前缀继续生效。
+	legacy map[string][]string
 }
 
 // NewRegistry 构造一个空注册表。
 func NewRegistry() *Registry {
-	return &Registry{byID: map[string]Vendor{}}
+	return &Registry{byID: map[string]Vendor{}, legacy: map[string][]string{}}
 }
 
 // Register 注册一个供应商实例；重复或空 ID 返回错误。
@@ -41,7 +46,27 @@ func (r *Registry) Register(v Vendor) error {
 	}
 	r.byID[id] = v
 	r.order = append(r.order, id)
+	if reporter, okReporter := v.(LegacyIDReporter); okReporter {
+		for _, legacyID := range reporter.LegacyIDs() {
+			legacyID = strings.ToLower(strings.TrimSpace(legacyID))
+			// 旧 ID 已被某个现役实例占用时以现役为准（ByID 优先），不登记。
+			if legacyID == "" || legacyID == id {
+				continue
+			}
+			r.legacy[legacyID] = appendUniqueID(r.legacy[legacyID], id)
+		}
+	}
 	return nil
+}
+
+// appendUniqueID 追加不重复的 ID（注册顺序保持不变）。
+func appendUniqueID(ids []string, id string) []string {
+	for _, existing := range ids {
+		if existing == id {
+			return ids
+		}
+	}
+	return append(ids, id)
 }
 
 // Vendors 返回全部供应商（按注册顺序）。
@@ -134,7 +159,9 @@ func (r *Registry) ParseCredential(raw []byte, fileNameHint string, attributes m
 	return credential, true
 }
 
-// SplitModelID 拆分模型 ID；只有已知供应商或区域别名才剥离前缀。
+// SplitModelID 拆分模型 ID；只有已知前缀才剥离。
+//
+// 「已知」= 现役供应商 ID、拆分前的旧 ID，或 cn / global 区域别名。
 func (r *Registry) SplitModelID(modelID string) (vendorID, bareModel string) {
 	trimmed := strings.TrimSpace(modelID)
 	index := strings.Index(trimmed, ":")
@@ -142,10 +169,47 @@ func (r *Registry) SplitModelID(modelID string) (vendorID, bareModel string) {
 		return "", trimmed
 	}
 	prefix := strings.ToLower(strings.TrimSpace(trimmed[:index]))
-	if _, ok := r.ByID(prefix); !ok && !isRegionAlias(prefix) {
+	if len(r.VendorIDsForPrefix(prefix)) == 0 {
 		return "", trimmed
 	}
 	return prefix, trimmed[index+1:]
+}
+
+// VendorIDsForPrefix 把模型前缀展开成现役供应商实例 ID。
+//
+//   - 现役 ID：返回自身；
+//   - 拆分前的旧 ID：返回它演变成的实例（通常一个，如 zcode → zcodeglobal）；
+//   - 区域别名（cn / global）：返回该区域的全部实例；
+//   - 其它：返回 nil，调用方应把这个前缀当成模型名的一部分。
+//
+// 拆分实例会让旧 vendorID 从注册表消失，用户存量配置里的 <旧ID>:<模型>
+// 若只按现役 ID 索引就会静默失效；统一走本方法即可自然兼容。
+func (r *Registry) VendorIDsForPrefix(prefix string) []string {
+	if r == nil {
+		return nil
+	}
+	key := strings.ToLower(strings.TrimSpace(prefix))
+	if key == "" {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, ok := r.byID[key]; ok {
+		return []string{key}
+	}
+	if ids := r.legacy[key]; len(ids) > 0 {
+		return append([]string(nil), ids...)
+	}
+	if !isRegionAlias(key) {
+		return nil
+	}
+	ids := make([]string, 0, 2)
+	for _, id := range r.order {
+		if r.byID[id].Region() == key {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // ModelKeyFor 生成模型禁用键 <vendorID>:<裸名>。

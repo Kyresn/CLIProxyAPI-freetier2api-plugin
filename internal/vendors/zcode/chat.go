@@ -1202,9 +1202,9 @@ const (
 	// VendorName 是管理端与列表的展示名（协议层通用名）。
 	VendorName = "ZCode"
 	// VendorIDCN / VendorIDGlobal 是国内 / 国际两个实例标识。
-	VendorIDCN     = "zcodecn"
-	VendorNameCN   = "ZCode 国内版"
-	VendorIDGlobal = "zcodeglobal"
+	VendorIDCN       = "zcodecn"
+	VendorNameCN     = "ZCode 国内版"
+	VendorIDGlobal   = "zcodeglobal"
 	VendorNameGlobal = "ZCode 国际版"
 
 	// ── 上游 origin ─────────────────────────────────────────────────────────

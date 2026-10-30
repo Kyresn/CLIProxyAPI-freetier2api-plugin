@@ -34,12 +34,15 @@
 | `raccoon` | 小浣熊 | — | API Key | `raccoon-*.json` |
 | `opencodezen` | OpenCode ZEN | `global` | API Key | `opencodezen-*.json` |
 | `cline` | Cline | `global` | WorkOS 设备授权 | `cline-*.json` |
-| `zcode` | ZCode | `global` | OAuth CLI 授权 | `zcode-*.json` |
+| `zcodecn` | ZCode 国内版 | `cn` | OAuth CLI 授权（智谱开放平台） | `zcodecn-*.json` |
+| `zcodeglobal` | ZCode 国际版 | `global` | OAuth CLI 授权（z.ai） | `zcodeglobal-*.json` |
 | `traecn` | Trae 国内版 | `cn` | OAuth 授权 | `traecn-*.json` |
 | `traeglobal` | Trae 国际版 | `global` | OAuth 授权 | `traeglobal-*.json` |
 | `codearts` | CodeArts | `cn` | OAuth 授权 | `codearts-*.json` |
 | `minimaxcodecn` | MiniMax Code 国内版 | `cn` | OAuth 设备授权 | `minimaxcodecn-*.json` |
 | `minimaxcodeglobal` | MiniMax Code 国际版 | `global` | OAuth 设备授权 | `minimaxcodeglobal-*.json` |
+
+> 旧版 ZCode 只有一个供应商 `zcode`，凭证文件为 `zcode-*.json`。升级后这类文件仍会被识别并默认归入 `zcodeglobal`（拆分前只有国际版），无需手工改名；`disabled_models` 与模型别名里已有的 `zcode:<模型>` 也会继续映射到 `zcodeglobal`。
 
 ## 快速开始
 
@@ -136,11 +139,11 @@ curl http://localhost:8317/v1/messages \
 | --- | --- | --- | --- |
 | `enabled_realms` | string | `cn,global` | 启用的区域（`cn` / `global`） |
 | `auto_checkin` | bool | `true` | 每日自动签到开关 |
-| `auto_checkin_at` | string | `10:00` | 每日自动签到执行时间（`HH:MM`） |
+| `auto_checkin_at` | string | `10:00` | 每日自动签到时间（`HH:MM`，本地时区）。排程粒度为整点，分钟不为 0 时顺延到下一整点，保证不会早于设定时刻执行 |
 | `auto_tasks` | bool | `true` | 每日自动任务开关 |
 | `checkin_history_limit` | int | `30` | 每个账号保留的签到历史条数（`<=0` 用默认值 30；控制台签到列可展开查看） |
 | `prompt_mode` | string | `passthrough` | 提示词防御模式：`passthrough`（透传）/ `custom`（替换）/ `append`（追加） |
-| `model_name_tag` | string | `off` | 模型名渠道标识：`off`（默认）/ `prefix` / `suffix`。开启后各供应商的模型对外 ID 自动带渠道前缀或后缀（如 `zcode-GLM-5.3`），同名模型可按渠道定点选择；标识按供应商统一生成、不区分账号。改动后需宿主重建模型注册表生效（重启或等凭据重载，控制台会提示「待生效」） |
+| `model_name_tag` | string | `off` | 模型名渠道标识：`off`（默认）/ `prefix` / `suffix`。开启后各供应商的模型对外 ID 自动带渠道前缀或后缀（如 `zcodeglobal-GLM-5.3`），同名模型可按渠道定点选择；标识按供应商统一生成、不区分账号。改动后需宿主重建模型注册表生效（重启或等凭据重载，控制台会提示「待生效」） |
 | `disabled_models` | string / list | 空 | 禁用模型列表（支持 `vendor:model` 或裸名，与控制台勾选合并） |
 | `extra_models` | string | 空 | 额外补充注册的模型名（逗号分隔） |
 | `state_dir` | string | `~/.freetier2api-plugin` | 状态与缓存目录（若存在 `~/.cli-proxy-api` 则默认使用其下 `freetier2api` 子目录） |

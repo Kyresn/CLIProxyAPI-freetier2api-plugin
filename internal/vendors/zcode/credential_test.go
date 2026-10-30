@@ -10,32 +10,65 @@ func TestLooksLikeCredential(t *testing.T) {
 		name     string
 		raw      map[string]any
 		fileName string
-		provider string
+		region   string
 		want     bool
 	}{
 		{
-			name:     "explicit vendor",
+			name:     "explicit legacy vendor",
 			raw:      map[string]any{"vendor": "zcode", "api_key": "abc.123"},
 			fileName: "any.json",
+			region:   RegionGlobal,
 			want:     true,
 		},
 		{
 			name:     "filename prefix",
 			raw:      map[string]any{"api_key": "abc.123"},
 			fileName: "zcode-acc1.json",
+			region:   RegionGlobal,
 			want:     true,
+		},
+		{
+			name:     "cn filename prefix",
+			raw:      map[string]any{"api_key": "abc.123"},
+			fileName: "zcodecn-acc1.json",
+			region:   RegionCN,
+			want:     true,
+		},
+		{
+			name:     "cn filename prefix rejected by global",
+			raw:      map[string]any{"api_key": "abc.123"},
+			fileName: "zcodecn-acc1.json",
+			region:   RegionGlobal,
+			want:     false,
 		},
 		{
 			name:     "foreign vendor",
 			raw:      map[string]any{"vendor": "qodercn"},
 			fileName: "zcode-test.json",
+			region:   RegionGlobal,
 			want:     false,
+		},
+		{
+			// xxx.xxx 形状的 api_key 任何供应商都可能有，不能单凭内容认领。
+			name:     "dotted api key without zcode filename",
+			raw:      map[string]any{"api_key": "abc.123"},
+			fileName: "account-1.json",
+			region:   RegionGlobal,
+			want:     false,
+		},
+		{
+			// 旧版按「zai 文件名 + xxx.xxx api_key」认领过这类凭证，行为不变。
+			name:     "dotted api key with zai filename",
+			raw:      map[string]any{"api_key": "abc.123"},
+			fileName: "zai-acc1.json",
+			region:   RegionGlobal,
+			want:     true,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := LooksLikeCredential(tc.raw, tc.fileName, tc.provider)
+			got := LooksLikeCredential(tc.raw, tc.fileName, tc.region)
 			if got != tc.want {
 				t.Fatalf("want %v, got %v", tc.want, got)
 			}
@@ -192,7 +225,7 @@ func TestLooksLikeCredentialRejectsForeign(t *testing.T) {
 		{map[string]any{"api_key": "sk-abcdef"}, "random.json", false},
 	}
 	for _, tc := range cases {
-		if got := LooksLikeCredential(tc.raw, tc.fileName, ""); got != tc.want {
+		if got := LooksLikeCredential(tc.raw, tc.fileName, RegionGlobal); got != tc.want {
 			t.Fatalf("LooksLikeCredential(%v, %s) = %v, want %v", tc.raw, tc.fileName, got, tc.want)
 		}
 	}
@@ -256,16 +289,20 @@ func TestAccountKeyPrioritizesIdentity(t *testing.T) {
 }
 
 // TestRegionProviderNormalization 锁住国内外登录标识的归一化。
+//
+// 只认本插件实际写出的取值：别名（china / z.ai / cn 当 provider 等）一律
+// 视为未知，交给调用方报错或缺省，避免配置笔误被静默解释成另一个渠道。
 func TestRegionProviderNormalization(t *testing.T) {
 	cases := []struct {
 		raw      string
 		region   string
 		provider string
 	}{
-		{"bigmodel", RegionCN, ProviderBigmodel},
-		{"cn", RegionCN, ProviderBigmodel},
-		{"zai", RegionGlobal, ProviderZai},
-		{"z.ai", RegionGlobal, ProviderZai},
+		{" cn ", RegionCN, ""},
+		{"global", RegionGlobal, ""},
+		{"bigmodel", "", ProviderBigmodel},
+		{"zai", "", ProviderZai},
+		{ProviderBigmodel, "", ProviderBigmodel},
 		{"", "", ""},
 		{"unknown", "", ""},
 	}
@@ -277,8 +314,11 @@ func TestRegionProviderNormalization(t *testing.T) {
 			t.Errorf("NormalizeProvider(%q) = %q, want %q", testCase.raw, got, testCase.provider)
 		}
 	}
-	if RegionForProvider(ProviderBigmodel) != RegionCN || RegionForProvider(ProviderZai) != RegionGlobal {
-		t.Fatal("RegionForProvider 映射错误")
+	if VendorIDFor(RegionCN) != VendorIDCN || VendorIDFor(RegionGlobal) != VendorIDGlobal {
+		t.Fatal("VendorIDFor 映射错误")
+	}
+	if VendorIDFor("") != VendorIDGlobal {
+		t.Fatal("缺省区域应归国际版")
 	}
 }
 
