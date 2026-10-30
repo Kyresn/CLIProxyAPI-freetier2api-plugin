@@ -296,10 +296,11 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   .card h2 { font-size: 13.5px; margin-bottom: 10px; }
   th, td { padding: 6.5px 7px; font-size: 12px; }
   /* 输入框独占一行。宽度来源已是 .grow/.grow-2 而非内联样式，
-     属性选择器 specificity 更高，直接覆盖即可，无需 !important。 */
+     属性选择器 specificity 更高，直接覆盖即可，无需 !important。
+     flex-basis 非 auto 时 width 不参与主轴尺寸计算，故不写 width。 */
   .row > input[type=text], .row > input[type=password], .row > input[type=number],
   .row > input[type=tel] {
-    flex: 1 1 100%; width: 100%;
+    flex: 1 1 100%;
   }
   /* select 嵌在 <label> 里：先让 label 可压缩，select 才跟着收窄，
      否则 320px 下 #setPromptMode 会以 option 的自然宽度撑破视口。 */

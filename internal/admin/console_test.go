@@ -645,3 +645,25 @@ func TestConsolePageShowsCheckinHistory(t *testing.T) {
 		}
 	}
 }
+
+// TestConsoleScanTableScrollsInsideWrapper 验证扫描表的横向滚动发生在表格自己的容器里。
+//
+// 扫描表有 5 列、窄屏必然超宽。如果让 .card 承担 overflow-x，滚动会连卡片标题一起
+// 横向卷走（320px 时标题左移 157px），看起来像标题被裁掉。滚动容器必须是只包表格的
+// .table-scroll，卡片与标题保持不动。
+func TestConsoleScanTableScrollsInsideWrapper(t *testing.T) {
+	page := Page("/plugins/freetier2api")
+
+	// 滚动容器挂在表格外层，而不是卡片上。
+	if !strings.Contains(page, "#accounts, #scans .table-scroll") {
+		t.Fatal("narrow-screen overflow must be carried by .table-scroll, not .card")
+	}
+	// 渲染扫描表时必须真的建出这层容器。
+	if !strings.Contains(page, `"table-scroll"`) {
+		t.Fatal("renderScans must wrap the table in a .table-scroll element")
+	}
+	// 账号表自带横滚，不应被一并套进新容器（否则两处规则重叠、边框错位）。
+	if strings.Contains(page, "#accounts .table-scroll") {
+		t.Fatal("accounts table already scrolls on its own; do not wrap it again")
+	}
+}
