@@ -151,6 +151,19 @@ func (c *Catalog) ExpandKeys(modelID string) []string {
 	if trimmed == "" {
 		return nil
 	}
+	// 旧供应商 ID（如 zcode 拆成 zcodecn/zcodeglobal）：SplitModelID 只认
+	// 当前注册的 ID/区域别名，必须在它之前识别旧前缀。
+	if prefix, bare, okKey := splitVendorModelKey(trimmed); okKey {
+		if _, okVendor := c.registry.ByID(prefix); !okVendor {
+			if aliasVendors := c.vendorsForAlias(prefix); len(aliasVendors) > 0 {
+				keys := make([]string, 0, len(aliasVendors))
+				for _, vendor := range aliasVendors {
+					keys = append(keys, c.registry.ModelKeyFor(vendor.ID(), bare))
+				}
+				return keys
+			}
+		}
+	}
 	prefix, bare := c.registry.SplitModelID(trimmed)
 	if prefix == "" {
 		return []string{bare}
@@ -168,6 +181,38 @@ func (c *Catalog) ExpandKeys(modelID string) []string {
 		return keys
 	}
 	return []string{bare}
+}
+
+// splitVendorModelKey 按第一个冒号拆出 vendor 前缀（不校验注册表）。
+func splitVendorModelKey(key string) (string, string, bool) {
+	trimmed := strings.TrimSpace(key)
+	index := strings.Index(trimmed, ":")
+	if index <= 0 || index == len(trimmed)-1 {
+		return "", "", false
+	}
+	return strings.ToLower(strings.TrimSpace(trimmed[:index])), trimmed[index+1:], true
+}
+
+// vendorsForAlias 返回声明了该旧供应商 ID 的实例。
+func (c *Catalog) vendorsForAlias(prefix string) []core.Vendor {
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	if prefix == "" {
+		return nil
+	}
+	out := make([]core.Vendor, 0, 2)
+	for _, vendor := range c.registry.Vendors() {
+		provider, okProvider := core.As[core.VendorAliasProvider](vendor)
+		if !okProvider {
+			continue
+		}
+		for _, alias := range provider.LegacyVendorIDs() {
+			if strings.EqualFold(strings.TrimSpace(alias), prefix) {
+				out = append(out, vendor)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // ExpandDisabledList 展开配置里的禁用项并稳定排序。
@@ -692,6 +737,14 @@ func (c *Catalog) reloadAliasesLocked(aliases map[string]string) {
 			continue
 		}
 		next[trimmedKey] = trimmedAlias
+		// 旧供应商 ID 的别名键（如 zcode:GLM-5.3）迁移到拆分后的每个实例。
+		if prefix, bare, okKey := splitVendorModelKey(trimmedKey); okKey {
+			if _, okVendor := c.registry.ByID(prefix); !okVendor {
+				for _, vendor := range c.vendorsForAlias(prefix) {
+					next[aliasScopedKey(vendor.ID(), bare)] = trimmedAlias
+				}
+			}
+		}
 	}
 	c.aliases = next
 }

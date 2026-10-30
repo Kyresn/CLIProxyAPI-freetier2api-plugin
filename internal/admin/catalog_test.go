@@ -417,3 +417,39 @@ func TestCreditsChangeTriggersPersist(t *testing.T) {
 		t.Fatalf("persisted credits = %q, want 0.80X after repricing", got)
 	}
 }
+
+// aliasVendor 声明旧供应商 ID，用于验证拆分后的配置迁移。
+type aliasVendor struct {
+	fakeVendor
+	legacy []string
+}
+
+func (v *aliasVendor) LegacyVendorIDs() []string { return v.legacy }
+
+// TestExpandKeysLegacyVendorAlias 锁住 zcode:* 旧键展开到两个新实例。
+func TestExpandKeysLegacyVendorAlias(t *testing.T) {
+	store := state.NewStore()
+	store.Configure(t.TempDir())
+	if _, err := store.Load(); err != nil {
+		t.Fatal(err)
+	}
+	registry := core.NewRegistry()
+	for _, vendor := range []core.Vendor{
+		&aliasVendor{fakeVendor: fakeVendor{Meta: core.Meta{VendorID: "zcodecn", VendorName: "ZCode CN", VendorRegion: "cn"}}, legacy: []string{"zcode"}},
+		&aliasVendor{fakeVendor: fakeVendor{Meta: core.Meta{VendorID: "zcodeglobal", VendorName: "ZCode Global", VendorRegion: "global"}}, legacy: []string{"zcode"}},
+	} {
+		if err := registry.Register(vendor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	catalog := NewCatalog(store, registry)
+	keys := catalog.ExpandKeys("zcode:GLM-5.3")
+	if len(keys) != 2 {
+		t.Fatalf("legacy alias keys = %#v, want 2", keys)
+	}
+	for _, want := range []string{"zcodecn:GLM-5.3", "zcodeglobal:GLM-5.3"} {
+		if !slices.Contains(keys, want) {
+			t.Fatalf("keys = %#v, missing %s", keys, want)
+		}
+	}
+}

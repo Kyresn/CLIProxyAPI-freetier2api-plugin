@@ -50,6 +50,8 @@ type pendingLogin struct {
 	VendorID string
 	// Provider 是本次登录使用的 OAuth provider（bigmodel / zai）。
 	Provider string
+	// Profile 是本次登录使用的设备档案；登录头与落盘凭证共用它。
+	Profile DeviceProfile
 }
 
 // LoginStart 发起 OAuth 授权，返回用户需在浏览器打开的链接。
@@ -62,7 +64,11 @@ type pendingLogin struct {
 // 对话的覆盖值传进来，会让只想改对话地址的用户连带改坏登录链路。
 func LoginStart(ctx context.Context, logins core.LoginSessions, vendorID, provider string) (*pluginapi.AuthLoginStartResponse, error) {
 	vendorID = core.FirstNonEmpty(strings.TrimSpace(vendorID), VendorID)
-	provider = core.FirstNonEmpty(NormalizeProvider(provider), ProviderZai)
+	provider = NormalizeProvider(provider)
+	if provider == "" {
+		return nil, fmt.Errorf("unsupported zcode login provider %q", provider)
+	}
+	profile := NewDeviceProfile()
 	pollToken := NewHexID(32)
 
 	body, _ := json.Marshal(map[string]string{"provider": provider})
@@ -73,10 +79,7 @@ func LoginStart(ctx context.Context, logins core.LoginSessions, vendorID, provid
 	}
 	req.Header.Set("Authorization", "Bearer "+pollToken)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("HTTP-Referer", ZCodeOrigin)
-	req.Header.Set("X-ZCode-App-Version", ClientAppVersion)
-	req.Header.Set("X-Platform", "win32")
+	applyLoginHeaders(req, profile)
 
 	resp, errDo := hostbridge.Client(ctx, loginHTTPTimeout).Do(req)
 	if errDo != nil {
@@ -116,6 +119,7 @@ func LoginStart(ctx context.Context, logins core.LoginSessions, vendorID, provid
 		PollToken: effectiveToken,
 		VendorID:  vendorID,
 		Provider:  provider,
+		Profile:   profile,
 	})
 
 	return &pluginapi.AuthLoginStartResponse{
@@ -153,9 +157,7 @@ func LoginPoll(ctx context.Context, logins core.LoginSessions, sessionID string)
 		return nil, fmt.Errorf("create poll request: %w", errNew)
 	}
 	req.Header.Set("Authorization", "Bearer "+pending.PollToken)
-	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("HTTP-Referer", ZCodeOrigin)
-	req.Header.Set("X-ZCode-App-Version", ClientAppVersion)
+	applyLoginHeaders(req, pending.Profile)
 
 	resp, errDo := hostbridge.Client(ctx, loginHTTPTimeout).Do(req)
 	if errDo != nil {
@@ -178,7 +180,6 @@ func LoginPoll(ctx context.Context, logins core.LoginSessions, sessionID string)
 			User          struct {
 				UserID string `json:"user_id"`
 				ID     string `json:"id"`
-				Name   string `json:"name"`
 				Email  string `json:"email"`
 			} `json:"user"`
 			// bigmodel 是国内版登录的第三方 token；zai 是国际版。
@@ -186,14 +187,10 @@ func LoginPoll(ctx context.Context, logins core.LoginSessions, sessionID string)
 			Bigmodel struct {
 				AccessToken    string `json:"access_token"`
 				AccessTokenAlt string `json:"accessToken"`
-				RefreshToken   string `json:"refresh_token"`
-				RefreshAlt     string `json:"refreshToken"`
 			} `json:"bigmodel"`
 			Zai struct {
 				AccessToken    string `json:"access_token"`
 				AccessTokenAlt string `json:"accessToken"`
-				RefreshToken   string `json:"refresh_token"`
-				RefreshAlt     string `json:"refreshToken"`
 			} `json:"zai"`
 		} `json:"data"`
 	}
@@ -240,7 +237,7 @@ func LoginPoll(ctx context.Context, logins core.LoginSessions, sessionID string)
 		Vendor:   vendorID,
 		JWTToken: jwt,
 		AuthMode: "oauth",
-		Profile:  NewDeviceProfile(),
+		Profile:  pending.Profile,
 		Email:    email,
 		UserID:   userID,
 		Region:   RegionForProvider(provider),
@@ -291,6 +288,17 @@ func LoginPoll(ctx context.Context, logins core.LoginSessions, sessionID string)
 			StorageJSON: storage,
 		},
 	}, nil
+}
+
+// applyLoginHeaders 写入 OAuth init/poll 的客户端身份头。
+//
+// 只发官方客户端身份所需的 4 个头；X-Platform 与落盘档案同源，避免
+// 登录请求与后续计费请求看起来像两台设备。
+func applyLoginHeaders(req *http.Request, profile DeviceProfile) {
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("HTTP-Referer", HTTPReferer)
+	req.Header.Set("X-ZCode-App-Version", ClientAppVersion)
+	req.Header.Set("X-Platform", profile.PlatformFull())
 }
 
 // pickLoginAccessToken 按登录 provider 优先取对应的第三方 access_token。

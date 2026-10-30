@@ -35,7 +35,7 @@ func TestLooksLikeCredential(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := LooksLikeCredential(tc.raw, tc.fileName, tc.provider)
+			got := LooksLikeCredential(tc.raw, tc.fileName, tc.provider, RegionGlobal)
 			if got != tc.want {
 				t.Fatalf("want %v, got %v", tc.want, got)
 			}
@@ -192,7 +192,7 @@ func TestLooksLikeCredentialRejectsForeign(t *testing.T) {
 		{map[string]any{"api_key": "sk-abcdef"}, "random.json", false},
 	}
 	for _, tc := range cases {
-		if got := LooksLikeCredential(tc.raw, tc.fileName, ""); got != tc.want {
+		if got := LooksLikeCredential(tc.raw, tc.fileName, "", RegionGlobal); got != tc.want {
 			t.Fatalf("LooksLikeCredential(%v, %s) = %v, want %v", tc.raw, tc.fileName, got, tc.want)
 		}
 	}
@@ -262,10 +262,10 @@ func TestRegionProviderNormalization(t *testing.T) {
 		region   string
 		provider string
 	}{
-		{"bigmodel", RegionCN, ProviderBigmodel},
-		{"cn", RegionCN, ProviderBigmodel},
-		{"zai", RegionGlobal, ProviderZai},
-		{"z.ai", RegionGlobal, ProviderZai},
+		{"cn", RegionCN, ""},
+		{"global", RegionGlobal, ""},
+		{"bigmodel", "", ProviderBigmodel},
+		{"zai", "", ProviderZai},
 		{"", "", ""},
 		{"unknown", "", ""},
 	}

@@ -21,9 +21,8 @@ import (
 // adapter 是 core.Vendor 在 ZCode 上的实现。
 type adapter struct {
 	*core.NativeAdapter[*Credential]
-	// vendorID / vendorName 是实例标识（国内版 zcodecn / 国际版 zcodeglobal）。
-	vendorID   string
-	vendorName string
+	// vendorID 是实例标识（国内版 zcodecn / 国际版 zcodeglobal）。
+	vendorID string
 	// region / provider 固定本实例的登录来源。
 	region   string
 	provider string
@@ -51,7 +50,6 @@ func Instances(env core.Env) []core.Vendor {
 func newInstance(env core.Env, vendorID, vendorName, region, provider string) *adapter {
 	instance := &adapter{
 		vendorID:    vendorID,
-		vendorName:  vendorName,
 		region:      region,
 		provider:    provider,
 		claims:      newClaimGate(),
@@ -96,42 +94,23 @@ func (v *adapter) AuthMode() string { return "oauth" }
 
 // Configure 解析供应商专属配置。
 func (v *adapter) Configure(_ core.Settings, raw map[string]string) {
-	v.baseURL = strings.TrimSpace(raw["zcode_base_url"])
-	if interval, errParse := time.ParseDuration(strings.TrimSpace(raw["zcode_claim_min_interval"])); errParse == nil && interval >= 0 {
+	// 实例级键优先；族级键保留为旧配置的兼容回退。
+	v.baseURL = core.FirstNonEmpty(
+		strings.TrimSpace(raw[v.vendorID+"_base_url"]),
+		strings.TrimSpace(raw["zcode_base_url"]),
+	)
+	intervalText := core.FirstNonEmpty(
+		strings.TrimSpace(raw[v.vendorID+"_claim_min_interval"]),
+		strings.TrimSpace(raw["zcode_claim_min_interval"]),
+	)
+	if interval, errParse := time.ParseDuration(intervalText); errParse == nil && interval >= 0 {
 		v.claims.setInterval(interval)
 	}
 }
 
 // Match 判断一份凭证是否属于本实例。
-//
-// 新凭证带 vendor=zcodecn / zcodeglobal；旧凭证 vendor=zcode 或文件名
-// zcode-* 时按 region 归属，region 缺失的旧凭证默认归国际版。
 func (v *adapter) Match(fileName, provider string, raw map[string]any) bool {
-	if !LooksLikeCredential(raw, fileName, provider) {
-		return false
-	}
-	declared := strings.ToLower(strings.TrimSpace(core.GetString(raw, "vendor")))
-	switch declared {
-	case v.vendorID:
-		return true
-	case VendorIDCN, VendorIDGlobal:
-		// 明确声明了另一个实例。
-		return false
-	}
-
-	region := NormalizeRegion(core.GetString(raw, "region"))
-	if region == "" {
-		if core.FileNameMatchesConvention(fileName, VendorIDCN) {
-			region = RegionCN
-		} else if core.FileNameMatchesConvention(fileName, VendorIDGlobal) {
-			region = RegionGlobal
-		}
-	}
-	if region == "" {
-		// 旧凭证（vendor=zcode / 无标记）默认国际版，保持原有行为。
-		region = RegionGlobal
-	}
-	return region == v.region
+	return LooksLikeCredential(raw, fileName, provider, v.region)
 }
 
 // ---- 模型 ----
@@ -234,11 +213,14 @@ func (v *adapter) LoginPoll(ctx context.Context, state string) (*pluginapi.AuthL
 	return LoginPoll(ctx, v.Env.Logins, state)
 }
 
+// LegacyVendorIDs 让旧 `zcode:*` 配置继续命中两个新实例。
+func (v *adapter) LegacyVendorIDs() []string { return []string{VendorID} }
+
 // ConfigFields 声明 zcode 专属配置。
 func (v *adapter) ConfigFields() []pluginapi.ConfigField {
 	return []pluginapi.ConfigField{
-		{Name: "zcode_base_url", Type: pluginapi.ConfigFieldTypeString, Description: "上游基地址覆盖。"},
-		{Name: "zcode_claim_min_interval", Type: pluginapi.ConfigFieldTypeString, Description: "两次套餐领取之间的最小间隔（Go 时长，如 15s；0 表示不节流）。"},
+		{Name: v.vendorID + "_base_url", Type: pluginapi.ConfigFieldTypeString, Description: "本实例上游基地址覆盖（旧键 zcode_base_url 仍兼容）。"},
+		{Name: v.vendorID + "_claim_min_interval", Type: pluginapi.ConfigFieldTypeString, Description: "本实例两次套餐领取之间的最小间隔（Go 时长，如 15s；0 表示不节流）。"},
 	}
 }
 
@@ -249,6 +231,7 @@ var (
 	_ core.Configurable         = (*adapter)(nil)
 	_ core.ConfigFieldsProvider = (*adapter)(nil)
 	_ core.LoginProvider        = (*adapter)(nil)
+	_ core.VendorAliasProvider  = (*adapter)(nil)
 	_ core.QuotaProvider        = (*adapter)(nil)
 	_ core.Refresher            = (*adapter)(nil)
 	_ core.ActivityProbe        = (*adapter)(nil)

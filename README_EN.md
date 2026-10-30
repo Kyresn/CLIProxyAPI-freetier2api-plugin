@@ -34,12 +34,15 @@ If this project helps you, a Star would mean a lot.
 | `raccoon` | Raccoon (XiaoHuanXiong) | — | API Key | `raccoon-*.json` |
 | `opencodezen` | OpenCode ZEN | `global` | API Key | `opencodezen-*.json` |
 | `cline` | Cline | `global` | WorkOS Device Flow | `cline-*.json` |
-| `zcode` | ZCode | `global` | OAuth CLI Flow | `zcode-*.json` |
+| `zcodecn` | ZCode CN | `cn` | OAuth CLI Flow (bigmodel) | `zcodecn-*.json` |
+| `zcodeglobal` | ZCode Global | `global` | OAuth CLI Flow (z.ai) | `zcodeglobal-*.json` |
 | `traecn` | Trae CN | `cn` | OAuth Flow | `traecn-*.json` |
 | `traeglobal` | Trae Global | `global` | OAuth Flow | `traeglobal-*.json` |
 | `codearts` | CodeArts | `cn` | OAuth Flow | `codearts-*.json` |
 | `minimaxcodecn` | MiniMax Code CN | `cn` | OAuth Device Flow | `minimaxcodecn-*.json` |
 | `minimaxcodeglobal` | MiniMax Code Global | `global` | OAuth Device Flow | `minimaxcodeglobal-*.json` |
+
+> Legacy ZCode credentials (`zcode-*.json`) still load: routed by `region`, defaulting to Global when absent; the file name is kept unchanged.
 
 ## Quick Start
 

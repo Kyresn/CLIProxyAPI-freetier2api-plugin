@@ -341,6 +341,15 @@ func LoginUnsupported(vendor Vendor) error {
 		vendor.Name()+" 不支持登录：请用「添加 API Key」方式添加", http.StatusNotImplemented)
 }
 
+// VendorAliasProvider 由「供应商 ID 发生过拆分/改名」的实例实现。
+//
+// 旧配置里的 `zcode:model` 之类键需要继续命中新实例（zcodecn/zcodeglobal）。
+// 注册表与模型目录用这些别名展开旧键，避免用户自定义的禁用/别名静默失效。
+type VendorAliasProvider interface {
+	// LegacyVendorIDs 返回本实例仍应响应的旧供应商 ID。
+	LegacyVendorIDs() []string
+}
+
 // ConfigFieldsProvider 由需要声明 YAML 配置字段的供应商实现。
 type ConfigFieldsProvider interface {
 	ConfigFields() []pluginapi.ConfigField
