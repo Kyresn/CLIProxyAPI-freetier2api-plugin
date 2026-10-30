@@ -4,8 +4,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	"freetier2api-plugin/internal/core"
 )
 
 // TestIdentifierAcceptsNumberAndString 锁住 campaignId 的数字/字符串两种形态。
@@ -115,12 +113,9 @@ func TestCreditQuotaWithoutMetrics(t *testing.T) {
 	}
 }
 
-// TestMetricFloatAcceptsString 锁住上游数字字符串形态。
-func TestMetricFloatAcceptsString(t *testing.T) {
-	if got := core.FloatFromAny("12.5"); got != 12.5 {
-		t.Fatalf("core.FloatFromAny = %v, want 12.5", got)
-	}
-	if got := core.FloatFromAny(nil); got != 0 {
-		t.Fatalf("core.FloatFromAny(nil) = %v", got)
+func TestDescribeSnapErrorKeepsGatewayReason(t *testing.T) {
+	got := describeSnapError([]byte(`{"error_code":"APIG.0301","error_msg":"verify ak sk signature fail"}`))
+	if !strings.Contains(got, "APIG.0301") || !strings.Contains(got, "signature fail") {
+		t.Fatalf("describeSnapError = %q", got)
 	}
 }

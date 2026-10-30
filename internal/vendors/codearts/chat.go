@@ -139,12 +139,93 @@ func doCodeArtsRequest(ctx context.Context, baseURL string, req ChatRequest) (*h
 	return resp, nil
 }
 
-// signHuaweiRequest 为请求注入华为云 SDK-HMAC-SHA256 签名（签全部请求头）。
+// signHuaweiRequest 为请求注入华为云 SDK-HMAC-SHA256 签名。
 func signHuaweiRequest(req *http.Request, body []byte, cred *Credential) {
-	if cred.SecurityToken != "" {
-		req.Header.Set("X-Auth-Token", cred.SecurityToken)
+	signSDKRequest(req, body, cred, sdkSignOptions{AddAuthToken: true})
+}
+
+// sdkSignOptions 是签名管线的差异参数。
+type sdkSignOptions struct {
+	// HeaderNames 参与签名的头；nil 表示当前请求上的全部头。
+	HeaderNames []string
+	// AddAuthToken 是否额外发送 X-Auth-Token（旧网关需要，snap 不需要）。
+	AddAuthToken bool
+	// EnsureJSONContentType 在 POST 缺 Content-Type 时补 application/json。
+	EnsureJSONContentType bool
+	// Append 是签名后追加、不参与验签的头。
+	Append map[string]string
+}
+
+// signSDKRequest 是华为云 SDK-HMAC-SHA256 的唯一签名实现。
+func signSDKRequest(req *http.Request, body []byte, cred *Credential, opts sdkSignOptions) {
+	if cred.AccessKeyID == "" || cred.SecretAccessKey == "" {
+		return
 	}
-	signSDKRequest(req, body, cred, nil)
+
+	xDate := time.Now().UTC().Format("20060102T150405Z")
+	req.Header.Set("X-Sdk-Date", xDate)
+	req.Header.Set("Host", req.URL.Host)
+	if cred.SecurityToken != "" {
+		req.Header.Set("X-Security-Token", cred.SecurityToken)
+		if opts.AddAuthToken {
+			req.Header.Set("X-Auth-Token", cred.SecurityToken)
+		}
+	}
+	if opts.EnsureJSONContentType && req.Method != http.MethodGet && req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	payloadHash := sha256Hex(body)
+	req.Header.Set("X-Sdk-Content-Sha256", payloadHash)
+
+	canonicalHeadersStr, signedHeadersStr := "", ""
+	if opts.HeaderNames == nil {
+		canonicalHeadersStr, signedHeadersStr = canonicalHeaders(req)
+	} else {
+		keys := make([]string, 0, len(opts.HeaderNames))
+		seen := make(map[string]bool, len(opts.HeaderNames))
+		for _, name := range opts.HeaderNames {
+			if req.Header.Get(name) == "" {
+				continue
+			}
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			keys = append(keys, name)
+		}
+		sort.Strings(keys)
+		var canonical strings.Builder
+		for _, name := range keys {
+			canonical.WriteString(name + ":" + strings.TrimSpace(req.Header.Get(name)) + "\n")
+		}
+		canonicalHeadersStr = canonical.String()
+		signedHeadersStr = strings.Join(keys, ";")
+	}
+
+	canonicalRequest := strings.Join([]string{
+		req.Method,
+		canonicalURI(req.URL.EscapedPath()),
+		canonicalQuery(req.URL.RawQuery),
+		canonicalHeadersStr,
+		signedHeadersStr,
+		payloadHash,
+	}, "\n")
+
+	stringToSign := strings.Join([]string{
+		"SDK-HMAC-SHA256",
+		xDate,
+		sha256Hex([]byte(canonicalRequest)),
+	}, "\n")
+
+	signature := hmacHex(cred.SecretAccessKey, stringToSign)
+	req.Header.Set("Authorization", "SDK-HMAC-SHA256 Access="+cred.AccessKeyID+
+		", SignedHeaders="+signedHeadersStr+
+		", Signature="+signature)
+
+	for key, value := range opts.Append {
+		req.Header.Set(key, value)
+	}
 }
 
 // snapSignedHeaderNames 是 snap-access 请求参与签名的固定头集合。
@@ -162,76 +243,31 @@ var snapSignedHeaderNames = []string{
 
 // signSnapRequest 为 snap-access ops/statistics 请求注入 SDK-HMAC-SHA256 签名。
 //
-// 与 signHuaweiRequest 的区别只有参与签名的头集合；Agent-Type / X-Language
-// 在签名**之后**追加：仍会发送（服务端路由需要），但不参与验签。
+// 与 signHuaweiRequest 的区别：只签固定头集合，且 Agent-Type / X-Language
+// 在签名**之后**追加。这两个头仍会被发送（服务端路由需要），但不参与验签。
 func signSnapRequest(req *http.Request, body []byte, cred *Credential) {
-	if req.Method != http.MethodGet && req.Header.Get("Content-Type") == "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	signSDKRequest(req, body, cred, snapSignedHeaderNames)
-	// 签名后追加：不参与验签，但服务端按它们选择响应形态。
-	req.Header.Set("Agent-Type", "PromptCenter")
-	req.Header.Set("X-Language", "zh-cn")
+	signSDKRequest(req, body, cred, sdkSignOptions{
+		HeaderNames:           snapSignedHeaderNames,
+		EnsureJSONContentType: true,
+		Append: map[string]string{
+			"Agent-Type": "PromptCenter",
+			"X-Language": "zh-cn",
+		},
+	})
 }
 
-// signSDKRequest 注入华为云 SDK-HMAC-SHA256 签名。
-//
-// signedHeaderNames 是参与签名的头（小写）；传 nil 表示签请求当前的全部头。
-// 空值头一律跳过：把没设置的头写进 SignedHeaders 会被网关以 APIG.0301 拒绝。
-func signSDKRequest(req *http.Request, body []byte, cred *Credential, signedHeaderNames []string) {
-	if cred.AccessKeyID == "" || cred.SecretAccessKey == "" {
-		return
-	}
-
-	xDate := time.Now().UTC().Format("20060102T150405Z")
-	req.Header.Set("X-Sdk-Date", xDate)
-	req.Header.Set("Host", req.URL.Host)
-	if cred.SecurityToken != "" {
-		req.Header.Set("X-Security-Token", cred.SecurityToken)
-	}
-	payloadHash := sha256Hex(body)
-	req.Header.Set("X-Sdk-Content-Sha256", payloadHash)
-
-	keys := make([]string, 0, len(signedHeaderNames))
-	if signedHeaderNames == nil {
-		keys = make([]string, 0, len(req.Header))
-		for name := range req.Header {
-			keys = append(keys, strings.ToLower(name))
-		}
-	} else {
-		for _, name := range signedHeaderNames {
-			if strings.TrimSpace(req.Header.Get(name)) == "" {
-				continue
-			}
-			keys = append(keys, name)
-		}
+func canonicalHeaders(req *http.Request) (headers, signed string) {
+	keys := make([]string, 0, len(req.Header))
+	for k := range req.Header {
+		keys = append(keys, strings.ToLower(k))
 	}
 	sort.Strings(keys)
-
-	var canonical strings.Builder
-	for _, name := range keys {
-		canonical.WriteString(name + ":" + strings.TrimSpace(req.Header.Get(name)) + "\n")
+	var sb strings.Builder
+	for _, k := range keys {
+		v := req.Header.Get(k)
+		sb.WriteString(k + ":" + strings.TrimSpace(v) + "\n")
 	}
-	signedHeaders := strings.Join(keys, ";")
-
-	canonicalRequest := strings.Join([]string{
-		req.Method,
-		canonicalURI(req.URL.EscapedPath()),
-		canonicalQuery(req.URL.RawQuery),
-		canonical.String(),
-		signedHeaders,
-		payloadHash,
-	}, "\n")
-	stringToSign := strings.Join([]string{
-		"SDK-HMAC-SHA256",
-		xDate,
-		sha256Hex([]byte(canonicalRequest)),
-	}, "\n")
-
-	signature := hmacHex(cred.SecretAccessKey, stringToSign)
-	req.Header.Set("Authorization", "SDK-HMAC-SHA256 Access="+cred.AccessKeyID+
-		", SignedHeaders="+signedHeaders+
-		", Signature="+signature)
+	return sb.String(), strings.Join(keys, ";")
 }
 
 func canonicalURI(path string) string {
