@@ -227,7 +227,32 @@ func (s *Service) queryQuota(ctx context.Context, job quotaJob) (*pluginapi.Quot
 			quota, errQuota = quotaProvider.Quota(ctx, refreshed)
 		}
 	}
+	if errQuota != nil && isTransientFailure(errQuota) {
+		// 传输层抖动（上游 EOF / 连接被重置）在实测里是成片出现的：一次批量
+		// 查询里同一轮多个账号同时失败，几秒后重查就正常。重试一次的成本远低于
+		// 让用户对着一列「查询失败」自己点刷新。
+		if core.SleepContext(ctx, quotaRetryDelay) {
+			quota, errQuota = quotaProvider.Quota(ctx, job.credential)
+		}
+	}
 	return quota, errQuota
+}
+
+// quotaRetryDelay 是瞬时故障重试前的等待。
+const quotaRetryDelay = 500 * time.Millisecond
+
+// isTransientFailure 判断错误是否属于「稍后重试可能成功」的传输层故障。
+func isTransientFailure(err error) bool {
+	var failure *core.Failure
+	if errors.As(err, &failure) {
+		return failure.Kind == core.FailureKindTransient
+	}
+	var pluginErr *core.PluginError
+	if errors.As(err, &pluginErr) {
+		return pluginErr.HTTPStatus == http.StatusBadGateway ||
+			pluginErr.HTTPStatus == http.StatusServiceUnavailable
+	}
+	return false
 }
 
 // isAuthExpired 判断错误是否属于「凭证已过期/失效」类（401）。

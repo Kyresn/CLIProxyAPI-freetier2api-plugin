@@ -226,7 +226,10 @@ func signedSnapJSON(ctx context.Context, method, url string, cred *Credential, b
 
 	resp, errDo := hostbridge.Client(ctx, 20*time.Second).Do(req)
 	if errDo != nil {
-		return nil, fmt.Errorf("snap request failed: %w", errDo)
+		// 传输层失败按 502 上报：华为网关偶发直接断连（EOF），这类错误重查
+		// 通常就恢复，不能被当成账号或参数问题。
+		return nil, core.NewPluginError("codearts_snap_transport",
+			"snap request failed: "+errDo.Error(), http.StatusBadGateway)
 	}
 	defer func() { _ = resp.Body.Close() }()
 

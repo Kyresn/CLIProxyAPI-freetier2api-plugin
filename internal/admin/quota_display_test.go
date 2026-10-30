@@ -36,6 +36,31 @@ func TestIsAuthExpiredOnlyMatches401(t *testing.T) {
 	}
 }
 
+// TestIsTransientFailureMatchesTransportErrors 锁定「哪些错误值得再查一次」。
+//
+// 实测里上游会成片返回 EOF / 连接重置，几秒后重查就正常；这类错误必须重试，
+// 而凭证问题、参数问题重试没有意义。
+func TestIsTransientFailureMatchesTransportErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"502 传输失败", core.NewPluginError("codearts_snap_transport", "snap request failed: EOF", http.StatusBadGateway), true},
+		{"503 上游不可用", core.NewPluginError("upstream_unavailable", "unavailable", http.StatusServiceUnavailable), true},
+		{"transient 分类错误", &core.Failure{Kind: core.FailureKindTransient, Status: 502}, true},
+		{"401 凭证问题", core.NewPluginError("upstream_credential", "expired", http.StatusUnauthorized), false},
+		{"400 参数问题", core.NewPluginError("upstream_request", "bad request", http.StatusBadRequest), false},
+		{"普通错误", errors.New("boom"), false},
+		{"被包装的 502", fmt.Errorf("查询失败: %w", core.NewPluginError("x", "bad gateway", http.StatusBadGateway)), true},
+	}
+	for _, c := range cases {
+		if got := isTransientFailure(c.err); got != c.want {
+			t.Fatalf("%s: isTransientFailure = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 // quotaVendor / plainVendor 用于验证「能力标志」与「查询结果」是两件事。
 type quotaCapableVendor struct{ fakeVendor }
 
