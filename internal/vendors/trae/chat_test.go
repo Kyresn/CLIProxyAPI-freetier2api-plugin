@@ -740,7 +740,7 @@ func TestFetchQuotaSumsCreditPacks(t *testing.T) {
 	}
 }
 
-func TestFetchQuotaSkipsNonPositivePacks(t *testing.T) {
+func TestFetchQuotaHandlesUnlimitedPack(t *testing.T) {
 	stubHost(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"user_entitlement_pack_list":[
@@ -755,8 +755,8 @@ func TestFetchQuotaSkipsNonPositivePacks(t *testing.T) {
 		t.Fatalf("FetchQuota: %v", errQuota)
 	}
 	for _, metric := range quota.Summary {
-		if metric.Key == "credit_remain" && metric.Value != 0 {
-			t.Errorf("非正额度包应被跳过，剩余 = %v, want 0", metric.Value)
+		if metric.Key == "credit_remain" && (metric.Value != -1 || metric.Unit != "unlimited") {
+			t.Errorf("无限额度剩余应标记 -1/unlimited，得到 %v/%s", metric.Value, metric.Unit)
 		}
 	}
 }

@@ -202,15 +202,6 @@ type UserProfile struct {
 	OfficeIdentity string
 }
 
-// FetchUserInfo 查询账号资料（GET {auth_base}/user_info），补 uid / 昵称。
-func FetchUserInfo(ctx context.Context, authBase string, cred *Credential) (uid, nickname string, err error) {
-	profile, errProfile := FetchUserProfile(ctx, authBase, cred)
-	if errProfile != nil {
-		return "", "", errProfile
-	}
-	return profile.UID, profile.Nickname, nil
-}
-
 // FetchUserProfile 查询账号资料，同时带回组织码（X-Org-Code 的来源）。
 func FetchUserProfile(ctx context.Context, authBase string, cred *Credential) (*UserProfile, error) {
 	if strings.TrimSpace(authBase) == "" {

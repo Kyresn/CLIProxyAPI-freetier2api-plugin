@@ -93,7 +93,7 @@ func testIdentity() MachineIdentity {
 		"qoder_machine_token": "token-from-official-component",
 		"qoder_machine_type":  "type-from-official-component",
 		"qoder_machine_code":  "code-from-official-component",
-	})
+	}, MachineIdentity{})
 }
 
 // TestCheckinGlobalSendsNativeMachineHeaders 覆盖：拿到真身份后，活动查询、

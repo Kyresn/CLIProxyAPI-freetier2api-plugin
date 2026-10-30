@@ -162,7 +162,6 @@ package main / cgo        C ABI 入口（main.go / cgo.go）
        │    ├─ errors.go            [必备] 上游错误分类与可重试判定
        │    ├─ login.go             [必备] AuthMode + 登录流程 + 续期（只能有一个）
        │    ├─ tasks.go             [可选] 额度/签到/套餐领取/任务/每日奖励/账号资料
-       │    ├─ machine.go           [可选] 设备身份解析（官方组件 / 本机缓存）
        │    ├─ *_test.go            [按需] 与源码同目录；实况测试用 *_live_test.go
        │    └─ assets/              [按需] go:embed 的内嵌资源
        └─ internal/core            供应商无关契约（Vendor、能力接口、注册表、凭证、错误分类）

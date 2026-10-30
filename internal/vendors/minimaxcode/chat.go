@@ -710,7 +710,6 @@ func buildAgentQuery(cred *Credential, unixMS int64) string {
 	return strings.Join(parts, "&")
 }
 
-// buildSigninQuery 构建签到、额度与账号信息接口的查询字符串。
 // signinTimezoneID 返回签到接口要求的 IANA 时区名。
 //
 // 上游按客户端上报的时区结算自然日；缺失时以 HTTP 200 + invalid timezone_id
@@ -732,7 +731,11 @@ func signinTimezoneID(cred *Credential) string {
 	return "UTC"
 }
 
-func buildSigninQuery(cred *Credential, unixMS int64, forSignature bool) string {
+// buildSigninQuery 构建签到、额度与账号信息接口的查询字符串。
+//
+// 线上 URL 与参与签名的 URL 必须逐字节一致，因此这里只产出一份：曾经按
+// 「签名用/线上用」拆成两份，多出来的 op_ticket 让两边永远对不上。
+func buildSigninQuery(cred *Credential, unixMS int64) string {
 	cred.EnsureIdentifiers()
 	width := cred.ScreenWidth
 	if width == 0 {
@@ -775,7 +778,6 @@ func buildSigninQuery(cred *Credential, unixMS int64, forSignature bool) string 
 		{"browser_language", "en-US"},
 		{"browser_platform", "Win32"},
 		{"user_id", userID},
-		{"op_ticket", "undefined"},
 		{"screen_width", strconv.Itoa(width)},
 		{"screen_height", strconv.Itoa(height)},
 		{"token", tokenParam},
@@ -784,10 +786,7 @@ func buildSigninQuery(cred *Credential, unixMS int64, forSignature bool) string 
 
 	var parts []string
 	for _, p := range pairs {
-		if p[0] == "op_ticket" && !forSignature {
-			continue
-		}
-		if p[1] == "" && p[0] != "op_ticket" {
+		if p[1] == "" {
 			continue
 		}
 		parts = append(parts, p[0]+"="+FormEncode(p[1]))
@@ -831,12 +830,11 @@ func buildAgentTarget(cred *Credential, baseURL, path, method, body string, stre
 // buildSigninTarget 构建对 Signin/Quota/UserInfo 端点的签名目标。
 func buildSigninTarget(cred *Credential, baseURL, path, method, body string) Target {
 	unixMS := time.Now().UnixMilli()
-	wireQuery := buildSigninQuery(cred, unixMS, false)
-
-	// 签名 URL 必须与线上 URL 逐字节一致：wireQuery 会剔除仅用于签名的
-	// op_ticket，若签名仍按 signQuery 计算，YY 哈希永远匹配不上实际请求。
-	signURL := path + "?" + wireQuery
-	wireURL := baseURL + path + "?" + wireQuery
+	// 签名 URL 与线上 URL 的查询串必须逐字节一致（YY 哈希覆盖原始 query），
+	// 因此两者由同一个 query 拼出，只在 host 部分不同。
+	query := buildSigninQuery(cred, unixMS)
+	signURL := path + "?" + query
+	wireURL := baseURL + path + "?" + query
 
 	return Target{
 		Method:  method,

@@ -7,6 +7,7 @@ package autoclaw
 // data.reward_points 是本次奖励积分。
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 
 	"freetier2api-plugin/internal/core"
 	"freetier2api-plugin/internal/hostbridge"
+	"freetier2api-plugin/internal/logger"
 )
 
 // checkinTaskID 是每日签到任务的任务 ID。
@@ -111,24 +113,34 @@ const UserInfoPath = "/userapi/v1/user-info"
 // TriggerLoginActive 在签到成功后上报一次登录活跃。
 //
 // 参考实现（Agent2API checkin.rs）在签到后 POST user-info，服务端据此发放
-// 每日活跃 / 一次性登录奖励。失败只记日志，绝不改变签到结果。
+// 每日活跃 / 一次性登录奖励。失败只记日志：它是签到之外的附加收益，既不能
+// 改变签到结论，也不值得重试。
 func TriggerLoginActive(ctx context.Context, baseURL string, cred *Credential) {
-	deviceID := cred.DeviceIDValue()
-	if strings.TrimSpace(baseURL) == "" || strings.TrimSpace(deviceID) == "" {
-		return
+	if errActive := reportLoginActive(ctx, baseURL, cred); errActive != nil {
+		logger.Debug("autoclaw: login-active report failed: %v", errActive)
 	}
-	body, errMarshal := json.Marshal(map[string]any{"source_id": "autoclaw", "device_id": deviceID})
+}
+
+func reportLoginActive(ctx context.Context, baseURL string, cred *Credential) error {
+	deviceID := strings.TrimSpace(cred.DeviceIDValue())
+	if strings.TrimSpace(baseURL) == "" || deviceID == "" {
+		return nil
+	}
+	body, errMarshal := json.Marshal(map[string]string{"source_id": "autoclaw", "device_id": deviceID})
 	if errMarshal != nil {
-		return
+		return errMarshal
 	}
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+UserInfoPath, strings.NewReader(string(body)))
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+UserInfoPath, bytes.NewReader(body))
 	if errReq != nil {
-		return
+		return errReq
 	}
 	ApplyUserAPIHeaders(req, cred.AccessTokenValue())
 	resp, errDo := hostbridge.Client(ctx, 20*time.Second).Do(req)
 	if errDo != nil {
-		return
+		return errDo
 	}
-	_ = resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
+	// 读完再关：宿主桥靠响应体被消费干净来复用连接，只 Close 会漏读。
+	_, errRead := io.Copy(io.Discard, resp.Body)
+	return errRead
 }

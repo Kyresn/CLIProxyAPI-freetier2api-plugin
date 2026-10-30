@@ -215,12 +215,21 @@ func checkinCredential() *Credential {
 
 // TestSigninQuerySendsTimezoneID 锁住签到接口必填的 timezone_id。
 func TestSigninQuerySendsTimezoneID(t *testing.T) {
-	query := buildSigninQuery(checkinCredential(), 1000, false)
+	query := buildSigninQuery(checkinCredential(), 1000)
 	if !strings.Contains(query, "timezone_id=") {
 		t.Fatalf("query 缺少 timezone_id: %s", query)
 	}
-	if strings.Contains(query, "op_ticket=") {
-		t.Fatalf("线上 query 不应包含 op_ticket: %s", query)
+}
+
+// TestSigninTargetSignsExactWireQuery 锁住「签名 URL 与线上 URL 逐字节一致」。
+//
+// 曾经签名用一份 query、线上用另一份（多一个 op_ticket），YY 哈希永远匹配
+// 不上实际请求，上游以 HTTP 200 + 业务错误拒绝签到。
+func TestSigninTargetSignsExactWireQuery(t *testing.T) {
+	const base = "https://agent.test"
+	target := buildSigninTarget(checkinCredential(), base, "/v1/api/signin", http.MethodPost, "{}")
+	if wire := strings.TrimPrefix(target.URL, base); wire != target.SignURL {
+		t.Fatalf("SignURL 与线上 URL 不一致:\n sign=%s\n wire=%s", target.SignURL, wire)
 	}
 }
 

@@ -47,7 +47,7 @@ func Checkin(ctx context.Context, cred *Credential, cfg Config) (*CheckinResult,
 		return nil, fmt.Errorf("trae 国际版无签到活动")
 	}
 
-	headers, errHeaders := checkinHeaders(cred, cfg)
+	headers, errHeaders := checkinHeaders(cred)
 	if errHeaders != nil {
 		return nil, errHeaders
 	}
@@ -137,8 +137,8 @@ func claimCheckinCredits(ctx context.Context, cfg Config, headers map[string]str
 				return errPost
 			}
 			lastErr = errPost
-			if attempt < 3 {
-				time.Sleep(time.Second)
+			if attempt < 3 && !core.SleepContext(ctx, time.Second) {
+				return ctx.Err()
 			}
 			continue
 		}
@@ -184,7 +184,7 @@ func postCheckin(ctx context.Context, url string, headers map[string]string) ([]
 // 参考实现（trae-mate）实测：签到端点接受的是**约 20 个头的官方客户端形态**，
 // 只发 Authorization + 设备头会被上游拒绝或归到不同设备配额。设备身份必须
 // 基于账号 uid 确定性派生：同一账号稳定、不同账号互不共享（上游按设备限流）。
-func checkinHeaders(cred *Credential, _ Config) (map[string]string, error) {
+func checkinHeaders(cred *Credential) (map[string]string, error) {
 	uid := traeUserID(cred)
 	if uid == "" {
 		return nil, fmt.Errorf("trae: 缺少账号 uid，无法派生签到设备身份")
@@ -196,7 +196,7 @@ func checkinHeaders(cred *Credential, _ Config) (map[string]string, error) {
 //
 // 签到必须拒绝共享默认设备身份（上游按设备限流）；额度只读接口没有这个
 // 约束，用一个稳定的账号级标识即可。
-func quotaHeaders(cred *Credential, _ Config) map[string]string {
+func quotaHeaders(cred *Credential) map[string]string {
 	if uid := traeUserID(cred); uid != "" {
 		return checkinHeadersForUID(cred, uid)
 	}
@@ -234,8 +234,10 @@ func checkinHeadersForUID(cred *Credential, uid string) map[string]string {
 const (
 	// traeCheckinUserAgent / traeCheckinMarketClientID 是官方 TRAE SOLO CN
 	// 客户端在签到请求里使用的固定 UA 与市场客户端标识。
-	traeCheckinUserAgent       = "VSCode 1.107.1 (TRAE SOLO CN)"
-	traeCheckinMarketClientID  = "VSCode 1.107.1"
+	traeCheckinUserAgent      = "VSCode 1.107.1 (TRAE SOLO CN)"
+	traeCheckinMarketClientID = "VSCode 1.107.1"
+	// productTypeCredits 是积分包的产品类型；product_type=0 是功能开关包。
+	productTypeCredits = 2
 )
 
 // traeUserID 返回签到设备身份所用的账号 id。
@@ -340,7 +342,7 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 	if errReq != nil {
 		return nil, errReq
 	}
-	for key, value := range quotaHeaders(cred, cfg) {
+	for key, value := range quotaHeaders(cred) {
 		req.Header.Set(key, value)
 	}
 
@@ -374,53 +376,45 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 	}
 
 	var total, used float64
+	unlimited := false
 	for _, pack := range result.UserEntitlementPackList {
-		limit, okLimit := flexFloat(pack.EntitlementBaseInfo.Quota.CreditsLimit)
-		// 只统计有正额度的积分包：0 / 负数表示无额度或非积分包。
-		if !okLimit || limit <= 0 {
+		// product_type=0 是功能开关包，没有积分额度。
+		if pack.EntitlementBaseInfo.ProductType != productTypeCredits {
+			continue
+		}
+		limit := core.FloatFromAny(pack.EntitlementBaseInfo.Quota.CreditsLimit)
+		// credits_limit=-1 是「无限额度」包，不能按 0 或负数跳过——那会让
+		// 无限账号显示剩余 0（auth.Totals 认 -1 / unit=unlimited）。
+		if limit < 0 {
+			unlimited = true
 			continue
 		}
 		total += limit
-		if amount, okAmount := flexFloat(pack.Usage.CreditsAmount); okAmount && amount > 0 {
+		if amount := core.FloatFromAny(pack.Usage.CreditsAmount); amount > 0 {
 			used += amount
 		}
+	}
+
+	// 无限额度用 -1 / unit=unlimited 表达（auth.Totals 认这一对），既不能写
+	// 0（看起来像用光），也不能写 total-used。
+	remain, remainUnit := total-used, "credits"
+	if unlimited {
+		remain, remainUnit = -1, "unlimited"
 	}
 
 	// 键名必须落在 auth.Totals 的词表内（credit_remain / credit_total /
 	// credit_used），否则控制台的「剩余 / 总额」会静默显示 0 / 0。
 	// 供应商包不能 import auth（分层约定），所以这里按约定手写同名键。
-	response := &pluginapi.QuotaFetchResponse{
+	return &pluginapi.QuotaFetchResponse{
 		Subscription: &pluginapi.QuotaSubscription{
 			Plan:     "Trae 国内版权益",
 			TierName: "Standard",
 			TierID:   cfg.VendorID,
 		},
 		Summary: []pluginapi.QuotaMetric{
-			{Key: "credit_remain", Label: "剩余积分", Value: total - used, Unit: "credits"},
+			{Key: "credit_remain", Label: "剩余积分", Value: remain, Unit: remainUnit},
 			{Key: "credit_total", Label: "总额度", Value: total, Unit: "credits"},
 			{Key: "credit_used", Label: "已用积分", Value: used, Unit: "credits"},
 		},
-	}
-	return response, nil
-}
-
-// flexFloat 宽容解析上游数字字段：接受 JSON 数字与数字字符串，
-// 键缺失 / 空串 / null 返回 false（调用方按 0 或跳过处理）。
-func flexFloat(value any) (float64, bool) {
-	switch typed := value.(type) {
-	case float64:
-		return typed, true
-	case json.Number:
-		parsed, errParse := typed.Float64()
-		return parsed, errParse == nil
-	case string:
-		trimmed := strings.TrimSpace(typed)
-		if trimmed == "" {
-			return 0, false
-		}
-		parsed, errParse := strconv.ParseFloat(trimmed, 64)
-		return parsed, errParse == nil
-	default:
-		return 0, false
-	}
+	}, nil
 }

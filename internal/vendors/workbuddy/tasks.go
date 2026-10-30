@@ -2086,7 +2086,7 @@ func (c *Client) GlobalDailyBonus(ctx context.Context, cred *Credential) (*Check
 		lit = litAfter
 	}
 	return &CheckinResult{
-		Streak: int64(len(lit)),
+		Streak:  int64(len(lit)),
 		Message: fmt.Sprintf("活跃信标已上报（已连续点亮 %d 天），奖励积分次日凌晨发放", len(lit)),
 	}, nil
 }
@@ -2459,7 +2459,6 @@ type checkinActivityStatus struct {
 	Active         bool  `json:"active"`
 	TodayCheckedIn bool  `json:"today_checked_in"`
 	StreakDays     int64 `json:"streak_days"`
-	DailyCredit    int64 `json:"daily_credit"`
 }
 
 // CheckinActivityStatus 查询签到活动状态（POST checkin-activity-status）。
@@ -2521,7 +2520,7 @@ func (c *Client) DailyCheckin(cred *Credential) (*CheckinResult, error) {
 		switch {
 		case code == 10001 || code == 1001:
 			// 10001 不是「签到成功」专属码，但在这个端点上表示已领。
-			if containsAny(msg, []string{"失败"}) {
+			if core.ContainsAny(msg, []string{"失败"}) {
 				return nil, &core.Failure{Status: status, Code: fmt.Sprintf("%d", code), Msg: msg, Kind: core.FailureKindClient}
 			}
 			return &CheckinResult{Already: true, Message: msg}, nil
@@ -2532,10 +2531,10 @@ func (c *Client) DailyCheckin(cred *Credential) (*CheckinResult, error) {
 			return nil, Classify(status, string(raw))
 		}
 		// code == 0：仍要看文案——上游会用 code=0 + 「签到失败」表达没签成。
-		if containsAny(msg, []string{"失败"}) {
+		if core.ContainsAny(msg, []string{"失败"}) {
 			return nil, &core.Failure{Status: status, Code: "0", Msg: msg, Kind: core.FailureKindClient}
 		}
-		if containsAny(msg, []string{"处理中", "请勿重复操作", "系统繁忙", "稍后再试"}) {
+		if core.ContainsAny(msg, []string{"处理中", "请勿重复操作", "系统繁忙", "稍后再试"}) {
 			return &CheckinResult{NotRecorded: true, Message: msg}, nil
 		}
 		var payload struct {
@@ -2545,9 +2544,11 @@ func (c *Client) DailyCheckin(cred *Credential) (*CheckinResult, error) {
 			StreakAlt int64  `json:"streak_days"`
 			Message   string `json:"message"`
 		}
+		// 领取已经成功：回执结构变了只丢明细（积分 / 连签），不能把一次
+		// 真实到账的签到报成失败，否则用户会重复点、历史里也记成 error。
 		if len(data) > 0 {
 			if errUnmarshal := json.Unmarshal(data, &payload); errUnmarshal != nil {
-				return nil, fmt.Errorf("decode checkin result: %w", errUnmarshal)
+				logger.Debug("workbuddy: 签到回执解析失败，按成功处理: %v", errUnmarshal)
 			}
 		}
 		return &CheckinResult{
@@ -2602,16 +2603,6 @@ func (c *Client) claimDailyCheckin(cred *Credential, url string) (status int, co
 		return resp.StatusCode, 0, envelope.Msg, envelope.Data, raw, enrichClassifyError(resp.StatusCode, string(raw), resp.Header)
 	}
 	return resp.StatusCode, envelope.Code, envelope.Msg, envelope.Data, raw, nil
-}
-
-// containsAny 报告 text 是否包含任一子串。
-func containsAny(text string, markers []string) bool {
-	for _, marker := range markers {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 // Balance 是账号的资源余额。

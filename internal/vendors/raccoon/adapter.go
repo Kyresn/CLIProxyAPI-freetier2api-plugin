@@ -247,8 +247,9 @@ func (v *adapter) Quota(ctx context.Context, cred *core.Credential) (*pluginapi.
 // Checkin 领取一次性的桌面端登录奖励（幂等）。
 //
 // 注意：小浣熊**没有每日签到端点**——每日积分由服务端自动发放。这条只是
-// 官方桌面端登录弹窗的一次性领取，因此「已领过」不写签到日期（NotRecorded），
-// 避免控制台每天显示「今日已签到」。
+// 官方桌面端登录弹窗的一次性领取，所以「已领过」按**幂等命中**（Already）
+// 上报，而不是 NotRecorded：后者在任务层被记成失败，会让每个账号每天多出一条
+// error 历史。
 func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.CheckinResult, error) {
 	native, errNative := v.Native(cred)
 	if errNative != nil {
@@ -258,18 +259,16 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 	if errGrant != nil {
 		if errGrant == ErrCheckinNotGranted {
 			return &core.CheckinResult{
-				Already:     true,
-				NotRecorded: true,
-				Message:     "该账号已领取过桌面端登录奖励（每号一次）",
+				Already: true,
+				Message: "该账号已领取过桌面端登录奖励（每号一次）",
 			}, nil
 		}
 		return nil, core.ToPluginError(errGrant)
 	}
 	if !granted {
 		return &core.CheckinResult{
-			Already:     true,
-			NotRecorded: true,
-			Message:     "该账号已领取过桌面端登录奖励（每号一次）",
+			Already: true,
+			Message: "该账号已领取过桌面端登录奖励（每号一次）",
 		}, nil
 	}
 	message := "登录奖励领取成功（一次性）"
