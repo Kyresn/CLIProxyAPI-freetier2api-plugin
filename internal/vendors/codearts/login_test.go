@@ -3,14 +3,12 @@ package codearts
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"freetier2api-plugin/cpasdk/pluginabi"
 	"freetier2api-plugin/cpasdk/pluginapi"
 	"freetier2api-plugin/internal/auth"
 	"freetier2api-plugin/internal/hostbridge"
@@ -32,52 +30,9 @@ const (
 )
 
 // useLoopbackHost 把宿主的 host.http.do 落到真实 http.Client 上。
-//
-// 出站请求一律走宿主桥（代理、审计、统计都挂在那条链路上），所以单测想验证
-// 「打出去的查询参数对不对」，就得先把这条桥搭起来——否则请求连发都发不出去。
 func useLoopbackHost(t *testing.T) {
 	t.Helper()
-	hostbridge.Configure(func(callbackID, method string, payload any) (json.RawMessage, error) {
-		if method != pluginabi.MethodHostHTTPDo {
-			return nil, nil
-		}
-		rawPayload, errMarshal := json.Marshal(payload)
-		if errMarshal != nil {
-			return nil, errMarshal
-		}
-		var req struct {
-			Method  string              `json:"method"`
-			URL     string              `json:"url"`
-			Headers map[string][]string `json:"headers"`
-			Body    []byte              `json:"body"`
-		}
-		if errDecode := json.Unmarshal(rawPayload, &req); errDecode != nil {
-			return nil, errDecode
-		}
-		var bodyReader io.Reader
-		if len(req.Body) > 0 {
-			bodyReader = strings.NewReader(string(req.Body))
-		}
-		httpReq, errNew := http.NewRequest(req.Method, req.URL, bodyReader)
-		if errNew != nil {
-			return nil, errNew
-		}
-		for key, values := range req.Headers {
-			for _, value := range values {
-				httpReq.Header.Add(key, value)
-			}
-		}
-		resp, errDo := (&http.Client{Timeout: 10 * time.Second}).Do(httpReq)
-		if errDo != nil {
-			return nil, errDo
-		}
-		defer func() { _ = resp.Body.Close() }()
-		respBody, errRead := io.ReadAll(resp.Body)
-		if errRead != nil {
-			return nil, errRead
-		}
-		return json.Marshal(map[string]any{"StatusCode": resp.StatusCode, "Headers": resp.Header, "Body": respBody})
-	})
+	hostbridge.ConfigureLoopback()
 	t.Cleanup(func() { hostbridge.Configure(nil) })
 }
 
