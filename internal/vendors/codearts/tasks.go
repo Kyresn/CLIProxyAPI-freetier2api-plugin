@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -226,6 +227,10 @@ func signedSnapJSON(ctx context.Context, method, url string, cred *Credential, b
 
 	resp, errDo := hostbridge.Client(ctx, 20*time.Second).Do(req)
 	if errDo != nil {
+		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
+			// 取消/超时不是上游抖动：原样返回以保留 errors.Is 链，也不该进重试。
+			return nil, errDo
+		}
 		// 传输层失败归 transient：华为网关偶发直接断连（EOF），这类错误重查
 		// 通常就恢复，不能被当成账号或参数问题。
 		return nil, &core.Failure{
