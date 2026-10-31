@@ -214,6 +214,19 @@ func TestPlanGrantQuotaFallsBackToEntitlements(t *testing.T) {
 	if m, _, _ := planGrantQuota(other, 100); len(m) != 0 {
 		t.Fatalf("功能类授予不应计入额度: %+v", m)
 	}
+
+	// 已领取但额度未生效的套餐可能被上游标成 pending：仍要按授予兜底，
+	// 否则页面会把它说成「尚未领取体验套餐」。
+	pending := []map[string]any{{
+		"status": "pending",
+		"entitlements": []any{map[string]any{
+			"entitlement_id": "ent-3", "show_name": "GLM-5.3", "meter": "model_usage",
+			"unit_type": "token", "grant_units": float64(10), "effective_at": float64(200),
+		}},
+	}}
+	if m, _, at := planGrantQuota(pending, 100); len(m) == 0 || at != 200 {
+		t.Fatalf("pending 套餐应参与兜底: metrics=%+v effectiveAt=%d", m, at)
+	}
 }
 
 func TestClaimStatusCountsAndErrors(t *testing.T) {

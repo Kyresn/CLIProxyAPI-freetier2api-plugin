@@ -196,8 +196,9 @@ func (v *adapter) fetchQuota(ctx context.Context, cred *Credential) (*pluginapi.
 			if effectiveAt > 0 {
 				note = "套餐已领取，额度 " + time.Unix(effectiveAt, 0).UTC().Format(time.RFC3339) + " 生效"
 			}
-		} else if len(activePlans(snapshot.plans, snapshot.serverTime)) > 0 {
-			// 有套餐但没有可解析的授予明细：领了，桶还没生成。
+		} else if len(snapshot.plans) > 0 {
+			// 有套餐但没有可解析的授予明细：领了，桶还没生成。这里不按 status
+			// 过滤——pending 也可能是「已领取未生效」，说成「尚未领取」会误导。
 			note = "套餐已领取，额度桶尚未生效"
 		}
 		response.Summary = append(response.Summary, pluginapi.QuotaMetric{
@@ -701,7 +702,7 @@ func planGrantQuota(plans []map[string]any, serverTime int64) ([]pluginapi.Quota
 	group := pluginapi.QuotaGroup{DisplayName: "活动额度"}
 	var total float64
 	effectiveAt := int64(0)
-	for _, plan := range activePlans(plans, serverTime) {
+	for _, plan := range grantCandidatePlans(plans, serverTime) {
 		// 授予量走 parsePlanGrants（与领取弹窗同一口径），生效时刻单独取：
 		// PlanGrant 不带时间字段，且只有「尚未生效」的授予需要提示。
 		planEffective := pendingEffectiveAt(plan, serverTime)
@@ -738,6 +739,26 @@ func planGrantQuota(plans []map[string]any, serverTime int64) ([]pluginapi.Quota
 		{Key: "total", Label: "总量", Value: total, Unit: "tokens"},
 	}
 	return metrics, []pluginapi.QuotaGroup{group}, effectiveAt
+}
+
+// grantCandidatePlans 返回参与额度兜底的套餐：已生效的，以及已领取但授予尚未
+// 生效的。
+//
+// 只看 activePlans 不够：上游对「已领取、额度未生效」的套餐可能标成 pending，
+// 那样既取不到授予明细，状态文案还会说成「尚未领取体验套餐」，与事实相反。
+// 到期时间已过的条目仍然排除。
+func grantCandidatePlans(plans []map[string]any, serverTime int64) []map[string]any {
+	out := make([]map[string]any, 0, len(plans))
+	for _, plan := range plans {
+		if endsAt := core.GetUnixSeconds(plan, "ends_at"); endsAt > 0 && serverTime > 0 && endsAt <= serverTime {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(core.RawStringField(plan, "status")))
+		if status == "" || status == "active" || pendingEffectiveAt(plan, serverTime) > 0 {
+			out = append(out, plan)
+		}
+	}
+	return out
 }
 
 // pendingEffectiveAt 返回套餐里最早一个「尚未生效」的授予时刻（Unix 秒）；没有则 0。

@@ -213,10 +213,10 @@ func checkinHeadersForUID(cred *Credential, uid string) map[string]string {
 		"Authorization":      "Cloud-IDE-JWT " + cred.AccessToken,
 		"X-Market-Client-Id": traeCheckinMarketClientID,
 		"X-Market-User-Id":   deriveMarketUserID(uid),
-		"X-User-Region":      regionHeader(cred),
+		"X-User-Region":      cred.RegionHeader(),
 		"X-Device-Id":        deriveCheckinDeviceID(uid),
 		"X-Lgw-Req-Sdk-Type": "3",
-		"Package-Type":       packageTypeHeader(cred),
+		"Package-Type":       cred.PackageTypeHeader(),
 		"X-Lscbd-Aid":        "787976",
 		"X-Lscbd-Platform":   "windows",
 		// 参考实现调用时产品信息为空，实际发送的就是字面量 undefined；
@@ -239,27 +239,6 @@ const (
 	// productTypeCredits 是积分包的产品类型；product_type=0 是功能开关包。
 	productTypeCredits = 2
 )
-
-// regionHeader 返回客户端上报的区域码：国内 CN，国际 SG。
-//
-// 国际版额度端点按区域路由，带 CN 会被网关当成跨区请求拒绝。
-func regionHeader(cred *Credential) string {
-	if cred != nil && cred.Region == RegionGlobal {
-		return "SG"
-	}
-	return "CN"
-}
-
-// packageTypeHeader 返回客户端的 Package-Type：国内谱系 stable_cn，国际谱系 stable。
-//
-// 取值对齐参考实现的抓包结论（Agent2API usage.rs：intl/solo-intl → stable）。
-// 国际版额度接口本身尚未在真机验证通过（该账号 401），此值按参考实现给出。
-func packageTypeHeader(cred *Credential) string {
-	if cred != nil && cred.Region == RegionGlobal {
-		return "stable"
-	}
-	return "stable_cn"
-}
 
 // traeUserID 返回签到设备身份所用的账号 id。
 //

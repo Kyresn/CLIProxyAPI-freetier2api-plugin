@@ -140,4 +140,25 @@ func (c *Credential) StorageJSON() ([]byte, error) {
 	return json.MarshalIndent(m, "", "  ")
 }
 
-// 签到与额度：国内版支持，国际版上游无对应端点。
+// 签到：国内版支持，国际版上游无对应端点；额度两端都有（路径不同）。
+
+// RegionHeader 返回客户端上报的区域码：国内 CN，国际 SG。
+//
+// 国际版额度端点按区域路由，带 CN 会被网关当成跨区请求拒绝。
+func (c *Credential) RegionHeader() string {
+	if c != nil && c.Region == RegionGlobal {
+		return "SG"
+	}
+	return "CN"
+}
+
+// PackageTypeHeader 返回客户端的 Package-Type：国内谱系 stable_cn，国际谱系 stable。
+//
+// 取值对齐参考实现的抓包结论（Agent2API usage.rs：intl/solo-intl → stable）。
+// 本机实测：国际版额度接口带 stable_cn 返回 401，换成 stable 后正常返回额度。
+func (c *Credential) PackageTypeHeader() string {
+	if c != nil && c.Region == RegionGlobal {
+		return "stable"
+	}
+	return "stable_cn"
+}
