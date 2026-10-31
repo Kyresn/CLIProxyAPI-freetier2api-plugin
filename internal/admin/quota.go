@@ -243,17 +243,32 @@ func queryQuotaWithRetry(
 	credential *core.Credential,
 	refresh func() *core.Credential,
 ) (*pluginapi.QuotaFetchResponse, error) {
-	quota, errQuota := query(credential)
-	if errQuota != nil && isAuthExpired(errQuota) && refresh != nil {
-		if refreshed := refresh(); refreshed != nil {
-			credential = refreshed
-			quota, errQuota = query(credential)
-		}
-	}
+	quota, used, errQuota := withAuthRetry(credential, refresh, query)
 	if errQuota != nil && isTransientFailure(errQuota) && core.SleepContext(ctx, quotaRetryDelay) {
-		quota, errQuota = query(credential)
+		quota, errQuota = query(used)
 	}
 	return quota, errQuota
+}
+
+// withAuthRetry 在动作因凭证过期（401）失败时刷新一次凭证再重试。
+//
+// 返回最终结果、实际使用的凭证（重试时是刷新后的）与错误。刷新失败时保留原
+// 错误、不重试：用旧凭证再打一次只会得到同一个 401。
+func withAuthRetry[T any](
+	credential *core.Credential,
+	refresh func() *core.Credential,
+	action func(*core.Credential) (T, error),
+) (T, *core.Credential, error) {
+	result, errAction := action(credential)
+	if errAction == nil || !isAuthExpired(errAction) || refresh == nil {
+		return result, credential, errAction
+	}
+	refreshed := refresh()
+	if refreshed == nil {
+		return result, credential, errAction
+	}
+	result, errAction = action(refreshed)
+	return result, refreshed, errAction
 }
 
 // quotaRetryDelay 是瞬时故障重试前的等待。

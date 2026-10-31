@@ -155,7 +155,9 @@ func (c *Credential) RegionHeader() string {
 // PackageTypeHeader 返回客户端的 Package-Type：国内谱系 stable_cn，国际谱系 stable。
 //
 // 取值对齐参考实现的抓包结论（Agent2API usage.rs：intl/solo-intl → stable）。
-// 本机实测：国际版额度接口带 stable_cn 返回 401，换成 stable 后正常返回额度。
+// 本机同一账号实测：改前额度请求返回 401/1001，改后返回 200 与空额度包。该账号
+// 期间也可能被保活刷新过 token，因此这条只作为「端点和头部可用」的证据，
+// 不构成因果结论。
 func (c *Credential) PackageTypeHeader() string {
 	if c != nil && c.Region == RegionGlobal {
 		return "stable"

@@ -229,6 +229,62 @@ func TestPlanGrantQuotaFallsBackToEntitlements(t *testing.T) {
 	}
 }
 
+// TestResolveOffersKeepsErrorWhenNothingFound 锁住「没查到 ≠ 已领完」。
+//
+// 计费通道成功但为空、营销通道失败时，若不把营销错误写回，页面会显示
+// 「已领取全部套餐」并把按钮置灰——这正是本 PR 要修的现象。
+func TestResolveOffersKeepsErrorWhenNothingFound(t *testing.T) {
+	marketingErr := core.NewPluginError("zcode_activity_http", "marketing 502", 502)
+	offers, errResolve := resolveOffers(nil, nil, nil, marketingErr)
+	if len(offers) != 0 || errResolve == nil {
+		t.Fatalf("营销失败且无投放时必须上报错误: offers=%v err=%v", offers, errResolve)
+	}
+	// 两条通道都成功且都为空：这是真正的「已领取全部」。
+	if _, errEmpty := resolveOffers(nil, nil, nil, nil); errEmpty != nil {
+		t.Fatalf("都成功且为空时不应报错: %v", errEmpty)
+	}
+	// 营销有投放时即使计费通道失败也不算「没查到」。
+	offers, errResolve = resolveOffers(nil, core.NewPluginError("x", "preview 失败", 502),
+		[]core.PlanInfo{{PlanID: "wk", Priority: 101}}, nil)
+	if len(offers) != 1 || errResolve != nil {
+		t.Fatalf("营销有投放时应返回投放且不报错: offers=%v err=%v", offers, errResolve)
+	}
+}
+
+// TestPlanGrantQuotaDedupesByEntitlementID 锁住「同模型同额度但确属两份授予」
+// 不会被折叠成一份。
+func TestPlanGrantQuotaDedupesByEntitlementID(t *testing.T) {
+	plans := []map[string]any{{
+		"status": "active",
+		"entitlements": []any{
+			map[string]any{"entitlement_id": "a", "show_name": "GLM-5.3", "meter": "model_usage", "unit_type": "token", "grant_units": float64(100)},
+			map[string]any{"entitlement_id": "b", "show_name": "GLM-5.3", "meter": "model_usage", "unit_type": "token", "grant_units": float64(100)},
+		},
+	}}
+	metrics, _, _ := planGrantQuota(plans, 0)
+	if len(metrics) != 2 || metrics[1].Value != 200 {
+		t.Fatalf("两份授予应累加到 200: %+v", metrics)
+	}
+}
+
+// TestPendingEffectiveAtIgnoresNonTokenGrants 锁住「功能类权益的未来生效时刻
+// 不能被当成额度生效」。
+func TestPendingEffectiveAtIgnoresNonTokenGrants(t *testing.T) {
+	plan := map[string]any{
+		"status": "pending",
+		"entitlements": []any{map[string]any{
+			"entitlement_id": "f1", "meter": "feature", "unit_type": "token",
+			"grant_units": float64(0), "effective_at": float64(200),
+		}},
+	}
+	if got := pendingEffectiveAt(plan, 100); got != 0 {
+		t.Fatalf("功能类权益不应产生生效时刻: %d", got)
+	}
+	if metrics, _, at := planGrantQuota([]map[string]any{plan}, 100); len(metrics) != 0 || at != 0 {
+		t.Fatalf("功能类权益不应参与额度兜底: metrics=%+v at=%d", metrics, at)
+	}
+}
+
 func TestClaimStatusCountsAndErrors(t *testing.T) {
 	clean := claimStatusOf(planSnapshot{
 		offered: []core.PlanInfo{{PlanID: "a"}, {PlanID: "b"}},

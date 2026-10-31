@@ -196,10 +196,13 @@ func (v *adapter) fetchQuota(ctx context.Context, cred *Credential) (*pluginapi.
 			if effectiveAt > 0 {
 				note = "套餐已领取，额度 " + time.Unix(effectiveAt, 0).UTC().Format(time.RFC3339) + " 生效"
 			}
-		} else if len(snapshot.plans) > 0 {
+		} else if len(grantCandidatePlans(snapshot.plans, snapshot.serverTime)) > 0 {
 			// 有套餐但没有可解析的授予明细：领了，桶还没生成。这里不按 status
 			// 过滤——pending 也可能是「已领取未生效」，说成「尚未领取」会误导。
 			note = "套餐已领取，额度桶尚未生效"
+		} else if len(snapshot.plans) > 0 {
+			// 套餐全都过期了：说成「尚未生效」同样是错的。
+			note = "套餐已过期，无可用额度"
 		}
 		response.Summary = append(response.Summary, pluginapi.QuotaMetric{
 			Key: "status", Label: "账号状态", Value: 1, Unit: note,
@@ -641,20 +644,34 @@ func (v *adapter) fetchPlanSnapshot(ctx context.Context, cred *Credential) planS
 	// preview 两次请求，不给营销端点增加无关流量。
 	offered, errPreview := previewOfferedPlans(ctx, cred)
 	var marketing []core.PlanInfo
+	var errMarketing error
 	if errPreview != nil || len(offered) == 0 {
-		var errMarketing error
 		marketing, errMarketing = queryMarketingTouch(ctx, cred)
 		if errMarketing != nil {
 			logger.Info("zcode marketing/touch 失败: %v", errMarketing)
 		}
-		if errPreview != nil && len(marketing) == 0 {
-			// 两条都拿不到投放：保留 preview 的失败原因，页面才不会误显示「已领取」。
-			snapshot.errPreview = errPreview
-			return snapshot
-		}
 	}
-	snapshot.offered = mergeOfferedPlans(offered, marketing)
+	snapshot.offered, snapshot.errPreview = resolveOffers(offered, errPreview, marketing, errMarketing)
 	return snapshot
+}
+
+// resolveOffers 合并两条投放通道，并决定「没查到」时上报哪个错误。
+//
+// 空列表只有在两条通道都成功时才算「已领取全部套餐」：任一通道失败且最终没有
+// 任何投放，必须把失败写回错误，否则页面会把「没查到」显示成「已领取」，按钮
+// 永远置灰（见 claimStatusOf 的注释）。
+func resolveOffers(offered []core.PlanInfo, errPreview error, marketing []core.PlanInfo, errMarketing error) ([]core.PlanInfo, error) {
+	merged := mergeOfferedPlans(offered, marketing)
+	if len(merged) > 0 {
+		return merged, nil
+	}
+	if errPreview != nil {
+		return nil, errPreview
+	}
+	if errMarketing != nil {
+		return nil, errMarketing
+	}
+	return nil, nil
 }
 
 // previewOfferedPlans 查计费通道投放的套餐，把业务失败码折成错误。
@@ -702,27 +719,28 @@ func planGrantQuota(plans []map[string]any, serverTime int64) ([]pluginapi.Quota
 	group := pluginapi.QuotaGroup{DisplayName: "活动额度"}
 	var total float64
 	effectiveAt := int64(0)
-	for _, plan := range grantCandidatePlans(plans, serverTime) {
-		// 授予量走 parsePlanGrants（与领取弹窗同一口径），生效时刻单独取：
-		// PlanGrant 不带时间字段，且只有「尚未生效」的授予需要提示。
-		planEffective := pendingEffectiveAt(plan, serverTime)
-		if planEffective > 0 && (effectiveAt == 0 || planEffective < effectiveAt) {
-			effectiveAt = planEffective
+	for _, candidate := range grantCandidatePlans(plans, serverTime) {
+		if candidate.effectiveAt > 0 && (effectiveAt == 0 || candidate.effectiveAt < effectiveAt) {
+			effectiveAt = candidate.effectiveAt
 		}
-		for _, grant := range parsePlanGrants(plan) {
+		for _, grant := range parsePlanGrants(candidate.plan) {
 			if grant.Model == "" || grant.Units <= 0 {
 				continue
 			}
-			// 同一份授予可能出现在多个套餐条目里：按模型 + 授予量去重。
-			key := grant.Model + "|" + formatTokens(grant.Units)
+			// 有 entitlement_id 就按它去重：同模型同额度但确属两份授予时不会被
+			// 折叠；上游没给 ID 时才退回「模型 + 授予量」。
+			key := grant.ID
+			if key == "" {
+				key = grant.Model + "|" + formatTokens(grant.Units)
+			}
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
 			total += grant.Units
 			description := "活动额度 " + formatTokens(grant.Units) + " tokens"
-			if planEffective > 0 {
-				description += "，" + time.Unix(planEffective, 0).UTC().Format(time.RFC3339) + " 生效"
+			if candidate.effectiveAt > 0 {
+				description += "，" + time.Unix(candidate.effectiveAt, 0).UTC().Format(time.RFC3339) + " 生效"
 			}
 			group.Buckets = append(group.Buckets, pluginapi.QuotaBucket{
 				Window:            grant.Model,
@@ -741,33 +759,53 @@ func planGrantQuota(plans []map[string]any, serverTime int64) ([]pluginapi.Quota
 	return metrics, []pluginapi.QuotaGroup{group}, effectiveAt
 }
 
+// grantCandidate 是参与额度兜底的套餐及其「最早未生效授予时刻」。
+type grantCandidate struct {
+	plan        map[string]any
+	effectiveAt int64
+}
+
 // grantCandidatePlans 返回参与额度兜底的套餐：已生效的，以及已领取但授予尚未
 // 生效的。
 //
 // 只看 activePlans 不够：上游对「已领取、额度未生效」的套餐可能标成 pending，
 // 那样既取不到授予明细，状态文案还会说成「尚未领取体验套餐」，与事实相反。
-// 到期时间已过的条目仍然排除。
-func grantCandidatePlans(plans []map[string]any, serverTime int64) []map[string]any {
-	out := make([]map[string]any, 0, len(plans))
+// 到期时间已过的条目仍然排除。生效时刻一并带出，避免调用方重复解析 entitlements。
+func grantCandidatePlans(plans []map[string]any, serverTime int64) []grantCandidate {
+	out := make([]grantCandidate, 0, len(plans))
 	for _, plan := range plans {
 		if endsAt := core.GetUnixSeconds(plan, "ends_at"); endsAt > 0 && serverTime > 0 && endsAt <= serverTime {
 			continue
 		}
+		effective := pendingEffectiveAt(plan, serverTime)
 		status := strings.ToLower(strings.TrimSpace(core.RawStringField(plan, "status")))
-		if status == "" || status == "active" || pendingEffectiveAt(plan, serverTime) > 0 {
-			out = append(out, plan)
+		if status == "" || status == "active" || effective > 0 {
+			out = append(out, grantCandidate{plan: plan, effectiveAt: effective})
 		}
 	}
 	return out
 }
 
-// pendingEffectiveAt 返回套餐里最早一个「尚未生效」的授予时刻（Unix 秒）；没有则 0。
+// pendingEffectiveAt 返回套餐里最早一个「尚未生效」的 token 授予时刻（Unix 秒）；
+// 没有则 0。
+//
+// 过滤条件与 parsePlanGrants 保持一致：功能类或非 token 的权益不算「额度生效」，
+// 否则页面会写出一个实际不存在的生效时刻。
 func pendingEffectiveAt(plan map[string]any, serverTime int64) int64 {
 	earliest := int64(0)
 	entitlements, _ := plan["entitlements"].([]any)
 	for _, item := range entitlements {
 		entry, okEntry := item.(map[string]any)
 		if !okEntry {
+			continue
+		}
+		if meter := core.RawStringField(entry, "meter"); meter != "" && meter != "model_usage" {
+			continue
+		}
+		if unit := core.RawStringField(entry, "unit_type"); unit != "" && unit != "token" {
+			continue
+		}
+		if firstPositiveFloat(entry, "grant_units", "grantUnits") <= 0 {
 			continue
 		}
 		effective := core.GetUnixSeconds(entry, "effective_at")
@@ -974,12 +1012,14 @@ func parsePlan(raw map[string]any) *core.PlanInfo {
 // 前端区分"没有额度信息"与"额度为 0"。
 func parsePlanGrants(raw map[string]any) []core.PlanGrant {
 	var grants []core.PlanGrant
-	appendGrant := func(name string, units float64, period string) {
+	appendGrant := func(id, name string, units float64, period string) {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			return
 		}
-		grants = append(grants, core.PlanGrant{Model: name, Units: units, Period: period})
+		grants = append(grants, core.PlanGrant{
+			ID: strings.TrimSpace(id), Model: name, Units: units, Period: period,
+		})
 	}
 
 	if entitlements, okList := raw["entitlements"].([]any); okList {
@@ -996,6 +1036,7 @@ func parsePlanGrants(raw map[string]any) []core.PlanGrant {
 				continue
 			}
 			appendGrant(
+				core.RawStringField(entry, "entitlement_id"),
 				core.FirstNonEmpty(core.RawStringField(entry, "show_name"), core.RawStringField(entry, "showName")),
 				firstPositiveFloat(entry, "grant_units", "grantUnits"),
 				core.RawStringField(entry, "period"),
@@ -1010,6 +1051,7 @@ func parsePlanGrants(raw map[string]any) []core.PlanGrant {
 					continue
 				}
 				appendGrant(
+					core.FirstNonEmpty(core.RawStringField(entry, "id"), core.RawStringField(entry, "entitlement_id")),
 					core.RawStringField(entry, "name"),
 					firstPositiveFloat(entry, "units"),
 					core.RawStringField(entry, "period"),

@@ -59,6 +59,11 @@ func Instances(env core.Env) []core.Vendor {
 }
 
 func newInstance(env core.Env, cfg Config, sessions *SessionStore) core.Vendor {
+	// 额度端点由 ConfigFor 保证非空。漏填时请求会打到 host+""，错误退化成 URL
+	// 拼接问题；在构造期直接暴露，比上线后看到一个费解的请求失败好。
+	if cfg.QuotaHost == "" || cfg.QuotaPath == "" {
+		panic("trae: quota endpoint missing for region " + string(cfg.Region))
+	}
 	return &adapter{
 		NativeAdapter: core.NewNativeAdapter(core.NativeSpec[*Credential]{
 			Meta: core.Meta{VendorID: cfg.VendorID, VendorName: cfg.VendorName, VendorRegion: string(cfg.Region)},

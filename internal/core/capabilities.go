@@ -409,6 +409,9 @@ type CaptchaConfig struct {
 
 // PlanGrant 是套餐授予的一项额度（通常是某模型的 token 额度）。
 type PlanGrant struct {
+	// ID 是上游授予的唯一标识（entitlement_id）；缺失时为空。
+	// 额度汇总按它去重，避免「同模型同额度但确属两份授予」被折叠。
+	ID     string  `json:"id,omitempty"`
 	Model  string  `json:"model"`
 	Units  float64 `json:"units"`
 	Period string  `json:"period,omitempty"`
