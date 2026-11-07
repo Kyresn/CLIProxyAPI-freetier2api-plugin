@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -162,24 +161,23 @@ func (s *Service) checkinAt() string {
 	return strings.TrimSpace(s.deps.Config().AutoCheckinAt)
 }
 
-// parseClockHour 把 HH:MM 解析成小时；分钟部分按整点执行（排程粒度为小时）。
+// parseClockHour 把 HH:MM 转成排程用的整点小时。
+//
+// 分钟部分向上取整，确保 10:35 不会在 10:00 提前执行。
 func parseClockHour(value string) (int, bool) {
-	hour, _, okClock := parseClock(value)
-	return hour, okClock
+	hour, minute, okClock := parseClock(value)
+	if !okClock {
+		return 0, false
+	}
+	if minute > 0 {
+		hour = (hour + 1) % 24
+	}
+	return hour, true
 }
 
 // parseClock 解析 HH:MM，返回小时与分钟。
 func parseClock(value string) (int, int, bool) {
-	parts := strings.Split(strings.TrimSpace(value), ":")
-	if len(parts) != 2 {
-		return 0, 0, false
-	}
-	hour, errHour := strconv.Atoi(strings.TrimSpace(parts[0]))
-	minute, errMinute := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if errHour != nil || errMinute != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
-		return 0, 0, false
-	}
-	return hour, minute, true
+	return core.ParseClock(value)
 }
 
 // pokeScheduler 唤醒调度循环重新计算下次执行时刻。
