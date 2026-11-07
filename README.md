@@ -75,7 +75,7 @@ plugins:
 
 ```bash
 git clone https://github.com/Kyresn/FreeTier-2API-Plugin-fork.git
-cd CLIProxyAPI-freetier2api-plugin
+cd FreeTier-2API-Plugin-fork
 ./scripts/build.sh
 ```
 

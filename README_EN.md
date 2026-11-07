@@ -75,7 +75,7 @@ Requires Go 1.22+ and a C compiler (`CGO_ENABLED=1`), or use the bundled Docker 
 
 ```bash
 git clone https://github.com/Kyresn/FreeTier-2API-Plugin-fork.git
-cd CLIProxyAPI-freetier2api-plugin
+cd FreeTier-2API-Plugin-fork
 ./scripts/build.sh
 ```
 
