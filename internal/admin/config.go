@@ -15,7 +15,7 @@ import (
 	"freetier2api-plugin/internal/state"
 )
 
-// PluginConfig 是 plugins.configs.freetier2api 解析出的有效全局配置。
+// PluginConfig 是 plugins.configs.freetier2api-fork 解析出的有效全局配置。
 type PluginConfig struct {
 	// EnabledRealms 是启用的域：逗号分隔的 cn / global 子集。
 	EnabledRealms []string
@@ -59,9 +59,9 @@ const (
 	// CheckinHistoryLimitKey 是签到历史条数的配置键。
 	CheckinHistoryLimitKey = "checkin_history_limit"
 	// DefaultStateDirName 是默认状态目录名。
-	DefaultStateDirName = ".freetier2api-plugin"
+	DefaultStateDirName = ".freetier2api-fork-plugin"
 	// StateDirEnvOverride 是状态目录的环境变量覆盖项。
-	StateDirEnvOverride = "FREETIER2API_PLUGIN_HOME"
+	StateDirEnvOverride = "FREETIER2API_FORK_PLUGIN_HOME"
 	// StateFileName 是状态文件名。
 	StateFileName = "state.json"
 	// SaltFileName 是机器盐文件名。
@@ -135,7 +135,7 @@ func DefaultStateDir() string {
 	if home, errHome := os.UserHomeDir(); errHome == nil && strings.TrimSpace(home) != "" {
 		cpaDir := filepath.Join(home, ".cli-proxy-api")
 		if info, errStat := os.Stat(cpaDir); errStat == nil && info.IsDir() {
-			return filepath.Join(cpaDir, "freetier2api")
+			return filepath.Join(cpaDir, "freetier2api-fork")
 		}
 		return filepath.Join(home, DefaultStateDirName)
 	}

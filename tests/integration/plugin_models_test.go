@@ -477,22 +477,22 @@ func TestDefaultStateDirFallback(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
-	t.Setenv("FREETIER2API_PLUGIN_HOME", "")
+	t.Setenv("FREETIER2API_FORK_PLUGIN_HOME", "")
 
-	// 1. 无 ~/.cli-proxy-api → 回退 ~/.freetier2api-plugin
+	// 1. 无 ~/.cli-proxy-api → 回退 ~/.freetier2api-fork-plugin
 	dir1 := app.DefaultStateDir()
-	want1 := filepath.Join(tempHome, ".freetier2api-plugin")
+	want1 := filepath.Join(tempHome, ".freetier2api-fork-plugin")
 	if dir1 != want1 {
 		t.Fatalf("defaultStateDir = %q, want %q", dir1, want1)
 	}
 
-	// 2. 存在 ~/.cli-proxy-api（Docker 挂载场景）→ 用其下 freetier2api 子目录
+	// 2. 存在 ~/.cli-proxy-api（Docker 挂载场景）→ 用其下 freetier2api-fork 子目录
 	cpaDir := filepath.Join(tempHome, ".cli-proxy-api")
 	if errMkdir := os.MkdirAll(cpaDir, 0o755); errMkdir != nil {
 		t.Fatalf("create temp cpa dir: %v", errMkdir)
 	}
 	dir2 := app.DefaultStateDir()
-	want2 := filepath.Join(cpaDir, "freetier2api")
+	want2 := filepath.Join(cpaDir, "freetier2api-fork")
 	if dir2 != want2 {
 		t.Fatalf("defaultStateDir with cpa dir = %q, want %q", dir2, want2)
 	}

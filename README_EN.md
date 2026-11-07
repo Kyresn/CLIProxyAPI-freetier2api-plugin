@@ -10,7 +10,7 @@ A native dynamic library plugin that connects multiple free-tier AI providers to
 
 If this project helps you, a Star would mean a lot.
 
-> **Maintenance notice**: This repository is the independently maintained `Kyresn/FreeTier-2API-Plugin-fork` fork. The plugin ID and CPA plugin directory configuration remain `freetier2api` / `FreeTier 2API`; the project name and CPA plugin store display name are `FreeTier 2API Plugin-fork`. It continues the open-source work of the original author at `jiandanc/CLIProxyAPI-freetier2api-plugin`; original authorship, copyright, and contribution attribution remain unchanged.
+> **Maintenance notice**: This repository is the independently maintained `Kyresn/FreeTier-2API-Plugin-fork` fork. The plugin ID is `freetier2api-fork`, while the CPA plugin directory display name remains `FreeTier 2API`; the legacy `freetier2api` plugin ID and state directory are not overwritten. The project name and runtime display name are `FreeTier 2API Plugin-fork`. It continues the open-source work of the original author at `jiandanc/CLIProxyAPI-freetier2api-plugin`; original authorship, copyright, and contribution attribution remain unchanged.
 
 > **⚠️ Important Compliance Notice**: This project is **strictly for personal learning and technical research only**. Commercial sale, API resale, paid account farming, public/paid shared pools, or any use violating upstream Terms of Service or applicable laws is strictly prohibited. Each provider is hard-limited to a maximum of **10 accounts**. By using this software, you agree to the [Disclaimer](#disclaimer) below.
 
@@ -53,18 +53,18 @@ If this project helps you, a Star would mean a lot.
 This plugin is listed in the official CLIProxyAPI plugin registry:
 
 1. Open the CLIProxyAPI Admin Panel → **Plugin Store**.
-2. Search for **FreeTier 2API Plugin-fork** and click Install.
+2. Search for **FreeTier 2API** and click Install; the new plugin ID is `freetier2api-fork`.
 
 ### Option 2: Manual Installation from Releases
 
-Download the archive for your platform from [Releases](https://github.com/Kyresn/FreeTier-2API-Plugin-fork/releases), extract the shared library (`freetier2api.so` / `freetier2api.dylib` / `freetier2api.dll`) into your CPA plugins directory, and enable it in `config.yaml`:
+Download the archive for your platform from [Releases](https://github.com/Kyresn/FreeTier-2API-Plugin-fork/releases), extract the shared library (`freetier2api-fork.so` / `freetier2api-fork.dylib` / `freetier2api-fork.dll`) into your CPA plugins directory, and enable it in `config.yaml`:
 
 ```yaml
 plugins:
   enabled: true
   dir: "/path/to/cpa/plugins"
   configs:
-    freetier2api:
+    freetier2api-fork:
       enabled: true
       enabled_realms: "cn,global"
 ```
@@ -79,7 +79,7 @@ cd FreeTier-2API-Plugin-fork
 ./scripts/build.sh
 ```
 
-The compiled shared library is written to `dist/freetier2api.<so|dylib|dll>`.
+The compiled shared library is written to `dist/freetier2api-fork.<so|dylib|dll>`.
 
 ## Usage
 
@@ -88,7 +88,7 @@ The compiled shared library is written to `dist/freetier2api.<so|dylib|dll>`.
 Once CLIProxyAPI is running, open the embedded console:
 
 ```text
-http://<CPA-HOST>:8317/v0/resource/plugins/freetier2api/console
+http://<CPA-HOST>:8317/v0/resource/plugins/freetier2api-fork/console
 ```
 
 - Click **"添加账号 ▾" (Add Account)**, choose a provider, and complete the browser OAuth flow or enter an API Key (up to 10 accounts per provider).
@@ -135,7 +135,7 @@ The Accounts table has a selection column like the Models table. The toolbar rea
 
 ## Configuration
 
-Configure under `plugins.configs.freetier2api` in `config.yaml` (runtime settings can also be toggled live in the web console):
+Configure under `plugins.configs.freetier2api-fork` in `config.yaml` (runtime settings can also be toggled live in the web console):
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -148,7 +148,7 @@ Configure under `plugins.configs.freetier2api` in `config.yaml` (runtime setting
 | `model_name_tag` | string | `off` | Channel tag on model IDs: `off` (default) / `prefix` / `suffix`. When enabled, every vendor model gets a vendor prefix/suffix in its public ID (e.g. `zcodeglobal-GLM-5.3`) so same-name models can be pinned to a channel; tags are per-vendor, not per-account. Once tagged, same-name models are no longer merged across vendors. Takes effect after the host rebuilds its model registry (restart or credential reload; the console shows a restart-pending hint) |
 | `disabled_models` | string / list | empty | Disabled models (`vendor:model` or bare name) |
 | `extra_models` | string | empty | Additional model IDs to register (comma-separated) |
-| `state_dir` | string | `~/.freetier2api-plugin` | State and cache directory |
+| `state_dir` | string | `~/.freetier2api-fork-plugin` | State and cache directory |
 | `log_level` | string | `info` | Log level: `debug` / `info` / `error` |
 
 ## Project Architecture

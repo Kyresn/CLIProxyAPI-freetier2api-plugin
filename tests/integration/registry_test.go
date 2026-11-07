@@ -93,7 +93,7 @@ func TestRegistryManifestIsValid(t *testing.T) {
 //
 // 宿主按 {id}{ext} 找动态库；ID 与文件名不一致会让插件静默不被加载。
 func TestPluginIDMatchesLibraryName(t *testing.T) {
-	if app.PluginID != "freetier2api" {
+	if app.PluginID != "freetier2api-fork" {
 		t.Fatalf("app.PluginID = %q; changing it requires renaming the build output and registry", app.PluginID)
 	}
 	if app.ProviderKey != core.ProviderKey {

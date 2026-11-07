@@ -102,7 +102,7 @@ jobs:
           mkdir -p dist
           go build -buildmode=c-shared -trimpath \
             -ldflags "-s -w -X main.pluginVersion=${VERSION}" \
-            -o "dist/freetier2api-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.ext }}" .
+            -o "dist/freetier2api-fork-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.ext }}" .
           ls -la dist
 
       # 插件商店安装要求归档名 {id}_{version}_{goos}_{goarch}.zip，
@@ -116,8 +116,8 @@ jobs:
           set -euo pipefail
           # 归档名里的版本号是 tag 去掉前导 v（宿主按同样规则从 tag 推导）。
           go run ./scripts/packstore \
-            -lib "dist/freetier2api-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.ext }}" \
-            -id freetier2api \
+            -lib "dist/freetier2api-fork-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.ext }}" \
+            -id freetier2api-fork \
             -version "${VERSION_TAG#v}" \
             -goos ${{ matrix.goos }} \
             -goarch ${{ matrix.goarch }} \
@@ -128,8 +128,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: startsWith(github.ref, 'refs/tags/v')
         with:
-          name: freetier2api-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/freetier2api_*_${{ matrix.goos }}_${{ matrix.goarch }}.zip
+          name: freetier2api-fork-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/freetier2api-fork_*_${{ matrix.goos }}_${{ matrix.goarch }}.zip
           if-no-files-found: error
 
   release:
@@ -182,21 +182,21 @@ jobs:
             echo '## 通过 CPA 插件商店安装（推荐）'
             echo
             echo '本插件已收录进 CPA 官方插件源，无需额外配置三方源。'
-            echo '在管理面板的插件商店里直接搜 **FreeTier 2API Plugin-fork** 一键安装即可。'
+            echo '在管理面板的插件商店里直接搜 **FreeTier 2API** 一键安装即可；新插件 ID 为 `freetier2api-fork`。'
             echo
             echo '## 手动安装'
             echo
-            echo '下载对应平台的 `freetier2api_<版本>_<goos>_<goarch>.zip`，解压后把其中的'
-            echo '`freetier2api` 动态库放进 CPA 的 `plugins/` 目录。'
-            echo '归档里已经用的是宿主要求的 `freetier2api{ext}` 文件名，解压后无需改名。'
+            echo '下载对应平台的 `freetier2api-fork_<版本>_<goos>_<goarch>.zip`，解压后把其中的'
+            echo '`freetier2api-fork` 动态库放进 CPA 的 `plugins/` 目录。'
+            echo '归档里已经用的是宿主要求的 `freetier2api-fork{ext}` 文件名，解压后无需改名。'
             echo
             echo '| 平台 | 下载归档 |'
             echo '| --- | --- |'
-            echo '| Linux x86_64 | `freetier2api_<版本>_linux_amd64.zip` |'
-            echo '| Linux arm64 | `freetier2api_<版本>_linux_arm64.zip` |'
-            echo '| macOS Apple Silicon | `freetier2api_<版本>_darwin_arm64.zip` |'
-            echo '| macOS Intel | `freetier2api_<版本>_darwin_amd64.zip` |'
-            echo '| Windows x64 | `freetier2api_<版本>_windows_amd64.zip` |'
+            echo '| Linux x86_64 | `freetier2api-fork_<版本>_linux_amd64.zip` |'
+            echo '| Linux arm64 | `freetier2api-fork_<版本>_linux_arm64.zip` |'
+            echo '| macOS Apple Silicon | `freetier2api-fork_<版本>_darwin_arm64.zip` |'
+            echo '| macOS Intel | `freetier2api-fork_<版本>_darwin_amd64.zip` |'
+            echo '| Windows x64 | `freetier2api-fork_<版本>_windows_amd64.zip` |'
             echo
             echo '`checksums.txt` 可用于核对归档完整性；配置与账号导入见仓库 README。'
             echo

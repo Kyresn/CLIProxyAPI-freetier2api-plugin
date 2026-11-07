@@ -10,7 +10,7 @@
 
 如果这个项目帮到了你，欢迎点个 Star 支持一下。
 
-> **维护归属说明**：本仓库是 `Kyresn/FreeTier-2API-Plugin-fork` 的独立维护版本，插件 ID 与 CPA 插件目录配置保持 `freetier2api` / `FreeTier 2API` 不变；项目名称与 CPA 插件商店展示名为 `FreeTier 2API Plugin-fork`。项目基于原作者 `jiandanc/CLIProxyAPI-freetier2api-plugin` 的开源工作继续维护；原作者与上游项目版权及贡献归属保持不变。
+> **维护归属说明**：本仓库是 `Kyresn/FreeTier-2API-Plugin-fork` 的独立维护版本，插件 ID 为 `freetier2api-fork`，CPA 插件目录显示名保留为 `FreeTier 2API`；旧插件 ID `freetier2api` 与旧状态目录不会被新插件覆盖。项目名称与运行时展示名为 `FreeTier 2API Plugin-fork`。项目基于原作者 `jiandanc/CLIProxyAPI-freetier2api-plugin` 的开源工作继续维护；原作者与上游项目版权及贡献归属保持不变。
 
 > **⚠️ 重要合规提示**：本项目**仅限个人学习与技术研究使用**，严禁用于任何商业售卖、API 转售、代充代刷、公开/收费共享池或任何违反各上游平台服务条款与法律法规的用途。单个供应商硬性限制最多添加 **10 个**账号。继续使用即表示您已阅读并同意文末[免责声明](#免责声明)。
 
@@ -53,18 +53,18 @@
 本插件已收录至 CLIProxyAPI 官方插件源：
 
 1. 打开 CLIProxyAPI 管理面板 → **插件商店**。
-2. 搜索 **FreeTier 2API Plugin-fork** 并点击一键安装。
+2. 搜索 **FreeTier 2API** 并点击一键安装；新插件 ID 为 `freetier2api-fork`。
 
 ### 方式二：手动安装 Release 动态库
 
-从 [Releases](https://github.com/Kyresn/FreeTier-2API-Plugin-fork/releases) 下载对应平台的归档包，解压后将动态库（`freetier2api.so` / `freetier2api.dylib` / `freetier2api.dll`）放入 CPA 插件目录，并在 `config.yaml` 中启用：
+从 [Releases](https://github.com/Kyresn/FreeTier-2API-Plugin-fork/releases) 下载对应平台的归档包，解压后将动态库（`freetier2api-fork.so` / `freetier2api-fork.dylib` / `freetier2api-fork.dll`）放入 CPA 插件目录，并在 `config.yaml` 中启用：
 
 ```yaml
 plugins:
   enabled: true
   dir: "/path/to/cpa/plugins"
   configs:
-    freetier2api:
+    freetier2api-fork:
       enabled: true
       enabled_realms: "cn,global"
 ```
@@ -79,7 +79,7 @@ cd FreeTier-2API-Plugin-fork
 ./scripts/build.sh
 ```
 
-编译产物输出至 `dist/freetier2api.<so|dylib|dll>`。
+编译产物输出至 `dist/freetier2api-fork.<so|dylib|dll>`。
 
 ## 使用方法
 
@@ -88,7 +88,7 @@ cd FreeTier-2API-Plugin-fork
 启动 CLIProxyAPI 后，访问内嵌控制台页面：
 
 ```text
-http://<CPA地址>:8317/v0/resource/plugins/freetier2api/console
+http://<CPA地址>:8317/v0/resource/plugins/freetier2api-fork/console
 ```
 
 - 点击 **「添加账号 ▾」** 选择对应供应商，按提示在浏览器完成 OAuth 授权或填入 API Key（每个供应商最多可添加 10 个账号）。
@@ -135,7 +135,7 @@ curl http://localhost:8317/v1/messages \
 
 ## 配置说明
 
-在宿主 `config.yaml` 的 `plugins.configs.freetier2api` 下可配置以下常用项（大多数运行期设置可直接在控制台页面调整并即时生效）：
+在宿主 `config.yaml` 的 `plugins.configs.freetier2api-fork` 下可配置以下常用项（大多数运行期设置可直接在控制台页面调整并即时生效）：
 
 | 配置键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -148,7 +148,7 @@ curl http://localhost:8317/v1/messages \
 | `model_name_tag` | string | `off` | 模型名渠道标识：`off`（默认）/ `prefix` / `suffix`。开启后各供应商的模型对外 ID 自动带渠道前缀或后缀（如 `zcodeglobal-GLM-5.3`），同名模型可按渠道定点选择；标识按供应商统一生成、不区分账号。改动后需宿主重建模型注册表生效（重启或等凭据重载，控制台会提示「待生效」） |
 | `disabled_models` | string / list | 空 | 禁用模型列表（支持 `vendor:model` 或裸名，与控制台勾选合并） |
 | `extra_models` | string | 空 | 额外补充注册的模型名（逗号分隔） |
-| `state_dir` | string | `~/.freetier2api-plugin` | 状态与缓存目录（若存在 `~/.cli-proxy-api` 则默认使用其下 `freetier2api` 子目录） |
+| `state_dir` | string | `~/.freetier2api-fork-plugin` | 状态与缓存目录（若存在 `~/.cli-proxy-api` 则默认使用其下 `freetier2api-fork` 子目录） |
 | `log_level` | string | `info` | 日志级别：`debug` / `info` / `error` |
 
 ## 项目架构

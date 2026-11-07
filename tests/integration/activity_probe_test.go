@@ -86,7 +86,7 @@ func TestZCodeActivityPreviewIsReadOnlyAndDegradesWithoutUserID(t *testing.T) {
 func previewActivities(t *testing.T, accountID string) activitiesPreviewResponse {
 	t.Helper()
 	raw, err := testApp.HandleMethod(pluginabi.MethodManagementHandle, mustMarshal(pluginapi.ManagementRequest{
-		Method: "POST", Path: "/v0/management/plugins/freetier2api/activities/preview",
+		Method: "POST", Path: "/v0/management/plugins/freetier2api-fork/activities/preview",
 		Headers: http.Header{"X-Host-Callback-Id": []string{testCallbackID}}, Body: []byte(`{"account_id":"` + accountID + `"}`),
 	}))
 	if err != nil {

@@ -12,7 +12,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GODOCKER="$ROOT/scripts/godocker.sh"
 
-# 产物名必须与 pluginID 一致（freetier2api）。
+# 产物名必须与 pluginID 一致（freetier2api-fork）。
 # -s -w 去掉符号表与 DWARF：约 12.5MB -> 9.1MB（-27%）。
 # 代价是 panic 堆栈只剩函数名与地址，没有文件名/行号 —— 定位线上问题时
 # 需要先用这份源码在本地复现，或临时用不带该参数的构建还原堆栈。
@@ -31,6 +31,6 @@ case "${GOOS:-linux}" in
   darwin) ext="dylib" ;;
 esac
 
-"$GODOCKER" build -buildmode=c-shared -ldflags="$LDFLAGS" -o "dist/freetier2api.$ext" .
+"$GODOCKER" build -buildmode=c-shared -ldflags="$LDFLAGS" -o "dist/freetier2api-fork.$ext" .
 
-echo "Built dist/freetier2api.$ext"
+echo "Built dist/freetier2api-fork.$ext"

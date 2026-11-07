@@ -12,7 +12,7 @@ import (
 )
 
 func TestConsolePageHidesMissingTotal(t *testing.T) {
-	page := Page("/plugins/freetier2api")
+	page := Page("/plugins/freetier2api-fork")
 
 	for _, literal := range []string{
 		"var hasTotal = quota.total > 0;",
@@ -36,7 +36,7 @@ func TestConsolePageHidesMissingTotal(t *testing.T) {
 // !quota.ok 时只渲染「-- / --」，用户拿到的信息与「上游没有额度接口」没有
 // 区别，无法判断该重新授权还是稍后再查。横幅也只报一个失败计数。
 func TestConsolePageShowsQuotaFailureReason(t *testing.T) {
-	page := Page("/plugins/freetier2api")
+	page := Page("/plugins/freetier2api-fork")
 
 	for _, literal := range []string{
 		`var reason = quota.message || "额度查询失败";`,

@@ -20,7 +20,7 @@ func postLoginCallback(t *testing.T, service *Service, state, callbackURL string
 	t.Helper()
 	request := pluginapi.ManagementRequest{
 		Method: http.MethodPost,
-		Path:   "/v0/management/plugins/freetier2api/login/callback",
+		Path:   "/v0/management/plugins/freetier2api-fork/login/callback",
 		Body:   []byte(`{"state":"` + state + `","url":"` + callbackURL + `"}`),
 	}
 	raw, errMarshal := json.Marshal(request)
@@ -51,7 +51,7 @@ func postLoginCallback(t *testing.T, service *Service, state, callbackURL string
 // 宿主按这张表放行 /plugins/<id>/... 子路径，漏登记就等于 404。
 func TestRegistrationDeclaresLoginCallbackRoute(t *testing.T) {
 	for _, route := range newService(t).Registration().Routes {
-		if route.Method == http.MethodPost && route.Path == "/plugins/freetier2api/login/callback" {
+		if route.Method == http.MethodPost && route.Path == "/plugins/freetier2api-fork/login/callback" {
 			return
 		}
 	}
@@ -228,8 +228,8 @@ func TestRegistrationDeclaresLoginStartRoutes(t *testing.T) {
 		found[route.Method+" "+route.Path] = true
 	}
 	for _, want := range []string{
-		"POST /plugins/freetier2api/login/start",
-		"GET /plugins/freetier2api/login/captcha-config",
+		"POST /plugins/freetier2api-fork/login/start",
+		"GET /plugins/freetier2api-fork/login/captcha-config",
 	} {
 		if !found[want] {
 			t.Fatalf("route %q missing: %#v", want, found)
@@ -246,7 +246,7 @@ func TestHandleLoginStartReturnsAuthorizationURL(t *testing.T) {
 	}
 	payload := loginRoutePayload(t, newServiceWithDeps(t, deps), pluginapi.ManagementRequest{
 		Method: http.MethodPost,
-		Path:   "/v0/management/plugins/freetier2api/login/start",
+		Path:   "/v0/management/plugins/freetier2api-fork/login/start",
 		Body:   []byte(`{"vendor_id":"autoclawglobal","metadata":{"oauth_variant":"google","ali_captcha_verify_param":"p"}}`),
 	})
 	if payload["ok"] != true || payload["url"] != "https://accounts.example/oauth" {
@@ -264,7 +264,7 @@ func TestHandleLoginStartSurfacesVendorError(t *testing.T) {
 	deps.loginStartErr = core.NewPluginError("login_failed", "风控验证未通过，请重新点击登录再试一次", http.StatusBadRequest)
 	payload := loginRoutePayload(t, newServiceWithDeps(t, deps), pluginapi.ManagementRequest{
 		Method: http.MethodPost,
-		Path:   "/v0/management/plugins/freetier2api/login/start",
+		Path:   "/v0/management/plugins/freetier2api-fork/login/start",
 		Body:   []byte(`{"vendor_id":"autoclawglobal"}`),
 	})
 	if payload["ok"] != false {
@@ -281,7 +281,7 @@ func TestHandleLoginCaptchaConfigRequest(t *testing.T) {
 	deps.captcha = core.CaptchaConfig{Enabled: true, SceneID: "scene-1", Region: "ga", Prefix: "sq51tr"}
 	payload := loginRoutePayload(t, newServiceWithDeps(t, deps), pluginapi.ManagementRequest{
 		Method: http.MethodGet,
-		Path:   "/v0/management/plugins/freetier2api/login/captcha-config",
+		Path:   "/v0/management/plugins/freetier2api-fork/login/captcha-config",
 		Query:  map[string][]string{"vendor": {"autoclawglobal"}},
 	})
 	if payload["ok"] != true {
@@ -296,7 +296,7 @@ func TestHandleLoginCaptchaConfigRequest(t *testing.T) {
 func TestHandleLoginCaptchaConfigRejectsMissingVendor(t *testing.T) {
 	payload := loginRoutePayload(t, newService(t), pluginapi.ManagementRequest{
 		Method: http.MethodGet,
-		Path:   "/v0/management/plugins/freetier2api/login/captcha-config",
+		Path:   "/v0/management/plugins/freetier2api-fork/login/captcha-config",
 	})
 	if payload["ok"] != false {
 		t.Fatalf("payload = %#v", payload)

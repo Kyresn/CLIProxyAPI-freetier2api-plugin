@@ -531,7 +531,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   // HOST_MGMT 是**宿主**提供的管理接口前缀（OAuth 登录等）。
   //
   // 这两个不能混用：宿主按 "/v0/management/<provider>-auth-url" 从路径里
-  // 提取 provider，若带上插件前缀会得到 "plugins/freetier2api/workbuddy"，
+  // 提取 provider，若带上插件前缀会得到 "plugins/freetier2api-fork/workbuddy"，
   // 校验失败直接 404（页面表现为 "The string did not match the expected pattern."）。
   var HOST_MGMT = "/v0/management";
   var logSeq = 0;
@@ -2008,7 +2008,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     modelSyncTimer = null;
     if (modelSyncRunning) { modelSyncPending = true; return; }
     modelSyncRunning = true;
-    var configPath = hostPath("/plugins/freetier2api/config");
+    var configPath = hostPath("/plugins/freetier2api-fork/config");
     api("GET", configPath).then(function (config) {
       // GET 返回的可能是空对象（该插件段尚未落过自定义配置），补成对象再合并。
       var body = (config && typeof config === "object") ? config : {};

@@ -186,7 +186,7 @@ func TestManagementAutoAllRouteDispatched(t *testing.T) {
 
 	raw, err := testApp.HandleMethod(pluginabi.MethodManagementHandle, mustMarshal(pluginapi.ManagementRequest{
 		Method: "POST",
-		Path:   "/v0/management/plugins/freetier2api/tasks/auto_all",
+		Path:   "/v0/management/plugins/freetier2api-fork/tasks/auto_all",
 	}))
 	if err != nil {
 		t.Fatalf("handleMethod error: %v", err)
