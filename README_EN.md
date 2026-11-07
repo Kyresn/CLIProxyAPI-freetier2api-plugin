@@ -1,4 +1,4 @@
-# FreeTier 2API Plugin
+# FreeTier 2API Plugin (Kyresn Maintained Fork)
 
 [![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-Plugin-2496ED?style=flat)](https://github.com/router-for-me/CLIProxyAPI)
@@ -9,6 +9,8 @@ A native dynamic library plugin that connects multiple free-tier AI providers to
 [中文](README.md) | English
 
 If this project helps you, a Star would mean a lot.
+
+> **Maintenance notice**: This repository is the independently maintained `Kyresn/CLIProxyAPI-freetier2api-plugin` fork. The plugin ID, installation name, and CLIProxyAPI marketplace name remain `freetier2api` / `FreeTier 2API`. It continues the open-source work of the original author at `jiandanc/CLIProxyAPI-freetier2api-plugin`; original authorship, copyright, and contribution attribution remain unchanged.
 
 > **⚠️ Important Compliance Notice**: This project is **strictly for personal learning and technical research only**. Commercial sale, API resale, paid account farming, public/paid shared pools, or any use violating upstream Terms of Service or applicable laws is strictly prohibited. Each provider is hard-limited to a maximum of **10 accounts**. By using this software, you agree to the [Disclaimer](#disclaimer) below.
 

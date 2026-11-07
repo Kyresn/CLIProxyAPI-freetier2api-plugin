@@ -1,4 +1,4 @@
-# FreeTier 2API Plugin
+# FreeTier 2API Plugin (Kyresn 独立维护版)
 
 [![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-Plugin-2496ED?style=flat)](https://github.com/router-for-me/CLIProxyAPI)
@@ -9,6 +9,8 @@
 中文 | [English](README_EN.md)
 
 如果这个项目帮到了你，欢迎点个 Star 支持一下。
+
+> **维护归属说明**：本仓库是 `Kyresn/CLIProxyAPI-freetier2api-plugin` 的独立维护版本，插件 ID、安装名称与 CLIProxyAPI 插件市场名称保持 `freetier2api` / `FreeTier 2API` 不变。项目基于原作者 `jiandanc/CLIProxyAPI-freetier2api-plugin` 的开源工作继续维护；原作者与上游项目版权及贡献归属保持不变。
 
 > **⚠️ 重要合规提示**：本项目**仅限个人学习与技术研究使用**，严禁用于任何商业售卖、API 转售、代充代刷、公开/收费共享池或任何违反各上游平台服务条款与法律法规的用途。单个供应商硬性限制最多添加 **10 个**账号。继续使用即表示您已阅读并同意文末[免责声明](#免责声明)。
 
