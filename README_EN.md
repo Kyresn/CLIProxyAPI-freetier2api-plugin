@@ -1,4 +1,4 @@
-# FreeTier 2API Plugin (Kyresn Maintained Fork)
+# FreeTier 2API Plugin-fork (Kyresn Maintained Fork)
 
 [![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-Plugin-2496ED?style=flat)](https://github.com/router-for-me/CLIProxyAPI)
@@ -10,7 +10,7 @@ A native dynamic library plugin that connects multiple free-tier AI providers to
 
 If this project helps you, a Star would mean a lot.
 
-> **Maintenance notice**: This repository is the independently maintained `Kyresn/CLIProxyAPI-freetier2api-plugin` fork. The plugin ID, installation name, and CLIProxyAPI marketplace name remain `freetier2api` / `FreeTier 2API`. It continues the open-source work of the original author at `jiandanc/CLIProxyAPI-freetier2api-plugin`; original authorship, copyright, and contribution attribution remain unchanged.
+> **Maintenance notice**: This repository is the independently maintained `Kyresn/FreeTier-2API-Plugin-fork` fork. The plugin ID and CPA plugin directory configuration remain `freetier2api` / `FreeTier 2API`; the project name and CPA plugin store display name are `FreeTier 2API Plugin-fork`. It continues the open-source work of the original author at `jiandanc/CLIProxyAPI-freetier2api-plugin`; original authorship, copyright, and contribution attribution remain unchanged.
 
 > **⚠️ Important Compliance Notice**: This project is **strictly for personal learning and technical research only**. Commercial sale, API resale, paid account farming, public/paid shared pools, or any use violating upstream Terms of Service or applicable laws is strictly prohibited. Each provider is hard-limited to a maximum of **10 accounts**. By using this software, you agree to the [Disclaimer](#disclaimer) below.
 
@@ -53,11 +53,11 @@ If this project helps you, a Star would mean a lot.
 This plugin is listed in the official CLIProxyAPI plugin registry:
 
 1. Open the CLIProxyAPI Admin Panel → **Plugin Store**.
-2. Search for **FreeTier 2API** and click Install.
+2. Search for **FreeTier 2API Plugin-fork** and click Install.
 
 ### Option 2: Manual Installation from Releases
 
-Download the archive for your platform from [Releases](https://github.com/jiandanc/CLIProxyAPI-freetier2api-plugin/releases), extract the shared library (`freetier2api.so` / `freetier2api.dylib` / `freetier2api.dll`) into your CPA plugins directory, and enable it in `config.yaml`:
+Download the archive for your platform from [Releases](https://github.com/Kyresn/FreeTier-2API-Plugin-fork/releases), extract the shared library (`freetier2api.so` / `freetier2api.dylib` / `freetier2api.dll`) into your CPA plugins directory, and enable it in `config.yaml`:
 
 ```yaml
 plugins:
@@ -74,7 +74,7 @@ plugins:
 Requires Go 1.22+ and a C compiler (`CGO_ENABLED=1`), or use the bundled Docker build script (`golang:1.24` Debian glibc image):
 
 ```bash
-git clone https://github.com/jiandanc/CLIProxyAPI-freetier2api-plugin.git
+git clone https://github.com/Kyresn/FreeTier-2API-Plugin-fork.git
 cd CLIProxyAPI-freetier2api-plugin
 ./scripts/build.sh
 ```

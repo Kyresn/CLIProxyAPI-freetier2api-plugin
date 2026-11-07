@@ -30,7 +30,7 @@ type stubDeps struct {
 }
 
 func (s stubDeps) Identity() Identity {
-	return Identity{ID: "freetier2api", DisplayName: "FreeTier 2API", ProviderKey: "freetier", Version: "test"}
+	return Identity{ID: "freetier2api", DisplayName: "FreeTier 2API Plugin-fork", ProviderKey: "freetier", Version: "test"}
 }
 func (s stubDeps) Config() PluginConfig { return DefaultPluginConfig() }
 func (s stubDeps) State() state.State   { return s.store.Snapshot() }

@@ -18,9 +18,9 @@ import (
 
 const (
 	pluginID          = "freetier2api"
-	pluginDisplayName = "FreeTier 2API"
+	pluginDisplayName = "FreeTier 2API Plugin-fork"
 	pluginAuthor      = "jiandanc"
-	pluginRepository  = "https://github.com/jiandanc/CLIProxyAPI-freetier2api-plugin"
+	pluginRepository  = "https://github.com/Kyresn/FreeTier-2API-Plugin-fork"
 
 	providerKey           = core.ProviderKey
 	managementRoutePrefix = "/plugins/" + pluginID

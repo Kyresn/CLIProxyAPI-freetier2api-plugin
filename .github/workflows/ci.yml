@@ -182,7 +182,7 @@ jobs:
             echo '## 通过 CPA 插件商店安装（推荐）'
             echo
             echo '本插件已收录进 CPA 官方插件源，无需额外配置三方源。'
-            echo '在管理面板的插件商店里直接搜 **FreeTier 2API** 一键安装即可。'
+            echo '在管理面板的插件商店里直接搜 **FreeTier 2API Plugin-fork** 一键安装即可。'
             echo
             echo '## 手动安装'
             echo
