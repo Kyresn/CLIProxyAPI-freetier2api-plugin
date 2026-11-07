@@ -84,6 +84,10 @@ main { padding: 14px 20px 48px; }
 [hidden], [hidden="true"], [hidden=""] { display: none !important; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .row[hidden] { display: none !important; }
+/* 输入框宽度按份数表达（.grow 一份 / .grow-2 两份）。
+   以前写在内联 style 里，内联 specificity 最高，窄屏想改只能上 !important。 */
+.row > .grow { flex: 1 1 0; min-width: 0; }
+.row > .grow-2 { flex: 2 1 0; min-width: 0; }
 button.act { padding: 6.5px 13px; border: 1px solid var(--border-strong); border-radius: 9px;
              background: var(--card); color: var(--fg); cursor: pointer; font-size: 13px; font-weight: 550;
              transition: background .12s ease, border-color .12s ease, color .12s ease,
@@ -226,7 +230,7 @@ input.aliasinput:focus { outline: none; border-color: var(--accent); box-shadow:
 
 .banner { padding: 10px 14px; border-radius: 10px; margin-bottom: 12px; font-size: 13px;
           display: none; transition: opacity .2s ease; border: 1px solid transparent;
-          border-left-width: 3px; backdrop-filter: blur(6px); }
+          border-left-width: 3px; backdrop-filter: blur(6px); white-space: pre-line; }
 .banner.show { display: block; }
 .banner.err  { background: var(--err-soft);  border-left: 3px solid var(--err);  color: var(--err); }
 .banner.ok   { background: var(--ok-soft);   border-left: 3px solid var(--ok);   color: var(--ok); }
@@ -265,6 +269,48 @@ details.fold > summary::before { content: "\25B8"; font-size: 22px; line-height:
 details.fold[open] > summary::before { content: "\25BE"; }
 details.fold > summary:hover { color: var(--accent); }
 details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+
+/* 响应式：平板（≤900px）。桌面端（>900px）完全不受影响，以下只在窄屏生效。 */
+@media (max-width: 900px) {
+  header { margin: 10px 12px 0; padding: 13px 16px; }
+  header h1 { font-size: 17.5px; }
+  main { padding: 12px 12px 36px; }
+  .card { padding: 14px 15px; }
+  th, td { padding: 7px 8px; }
+  /* 账号表与扫描结果表在窄屏改为横向滚动，避免 8 列 nowrap 撑破视口。
+     滚动容器只包表格本身：#accounts 是纯表格容器，扫描结果表由 renderScans()
+     套一层 .table-scroll——加在整张 .card 上会把 <h2> 标题和错误行一起卷进滚动。
+     代价：这两张表在该断点下不再吸顶（overflow-x 会让 overflow-y 计算为 auto），
+     窄屏本来也没有吸顶价值。 */
+  #accounts, #scans .table-scroll { overflow-x: auto; }
+  #models table { min-width: 820px; }
+}
+
+/* 响应式：手机（≤640px）。 */
+@media (max-width: 640px) {
+  header { margin: 8px 8px 0; padding: 12px 14px; }
+  header h1 { font-size: 16px; }
+  header .sub { font-size: 11.5px; }
+  main { padding: 10px 8px 30px; }
+  .card { padding: 12px; }
+  .card h2 { font-size: 13.5px; margin-bottom: 10px; }
+  th, td { padding: 6.5px 7px; font-size: 12px; }
+  /* 输入框独占一行。宽度来源已是 .grow/.grow-2 而非内联样式，
+     属性选择器 specificity 更高，直接覆盖即可，无需 !important。
+     flex-basis 非 auto 时 width 不参与主轴尺寸计算，故不写 width。 */
+  .row > input[type=text], .row > input[type=password], .row > input[type=number],
+  .row > input[type=tel] {
+    flex: 1 1 100%;
+  }
+  /* select 嵌在 <label> 里：先让 label 可压缩，select 才跟着收窄，
+     否则 320px 下 #setPromptMode 会以 option 的自然宽度撑破视口。 */
+  .row > label { max-width: 100%; min-width: 0; }
+  .row select { max-width: 100%; min-width: 0; }
+  /* 按钮按内容均分，避免多个按钮各占一行显得松散。 */
+  .row > button.act { flex: 1 1 auto; min-width: 0; }
+  #models table { min-width: 720px; }
+}
+
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 </head>
@@ -280,7 +326,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   <div class="card" id="keyBox" hidden>
     <h2>管理密钥</h2>
     <div class="row">
-      <input type="password" id="keyInput" placeholder="填入 CPA 管理密钥（remote-management.secret-key）" style="flex:1;min-width:280px">
+      <input type="password" id="keyInput" placeholder="填入 CPA 管理密钥（remote-management.secret-key）" class="grow">
       <button class="act primary" id="btnUseKey">使用</button>
     </div>
     <div class="hint">
@@ -317,12 +363,12 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       <div class="card" id="smsBox" hidden>
         <h2 id="smsTitle">手机验证码登录</h2>
         <div class="row" style="margin-bottom:8px">
-          <input type="tel" id="inputSmsPhone" placeholder="手机号（11 位）" style="flex:2;min-width:240px">
+          <input type="tel" id="inputSmsPhone" placeholder="手机号（11 位）" class="grow-2">
           <button class="act" id="btnSmsSend">发送验证码</button>
         </div>
         <div class="row" style="margin-bottom:8px">
-          <input type="text" id="inputSmsCode" placeholder="6 位短信验证码" style="flex:1;min-width:160px" maxlength="6">
-          <input type="text" id="inputSmsLabel" placeholder="备注名称（可选）" style="flex:1;min-width:140px">
+          <input type="text" id="inputSmsCode" placeholder="6 位短信验证码" class="grow" maxlength="6">
+          <input type="text" id="inputSmsLabel" placeholder="备注名称（可选）" class="grow">
           <button class="act primary" id="btnSmsVerify">登录并添加</button>
           <button class="act" id="btnSmsCancel">取消</button>
         </div>
@@ -334,7 +380,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         <div class="row" id="loginVariantRow" hidden style="display:none"></div>
         <div class="login-captcha" id="loginCaptcha" hidden></div>
         <div class="row">
-          <input type="text" id="loginUrl" readonly style="flex:1;min-width:320px">
+          <input type="text" id="loginUrl" readonly class="grow">
           <button class="act" id="btnOpenUrl">打开链接</button>
           <button class="act" id="btnCopyUrl">复制</button>
           <button class="act" id="btnLoginCancel">取消</button>
@@ -356,8 +402,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       <div class="card" id="apiKeyBox" hidden>
         <h2 id="apiKeyTitle">添加 API Key 账号</h2>
         <div class="row" style="margin-bottom:8px">
-          <input type="password" id="inputApiKey" placeholder="输入 API Key（必填）" style="flex:2;min-width:280px">
-          <input type="text" id="inputApiLabel" placeholder="备注名称（可选）" style="flex:1;min-width:140px">
+          <input type="password" id="inputApiKey" placeholder="输入 API Key（必填）" class="grow-2">
+          <input type="text" id="inputApiLabel" placeholder="备注名称（可选）" class="grow">
           <button class="act primary" id="btnSubmitApiKey">保存账号</button>
           <button class="act" id="btnCancelApiKey">取消</button>
         </div>
@@ -431,7 +477,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       <h2>运行期设置</h2>
       <div class="row">
         <label><input type="checkbox" id="setAutoCheckin"> 每日自动签到</label>
-        <label>执行时间 <input type="text" id="setCheckinAt" placeholder="10:00" style="width:80px"></label>
+        <label>执行时间 <input type="text" id="setCheckinAt" placeholder="10:00" style="width:80px" title="按整点排程：分钟不为 0 时顺延到下一整点，不会早于该时刻执行"></label>
       </div>
       <div class="row" style="margin-top:8px">
         <label><input type="checkbox" id="setAutoTasks"> 每日自动任务</label>
@@ -449,8 +495,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         <label>模型名渠道标识
           <select id="setModelNameTag" style="margin-left:8px;padding:3px 6px">
             <option value="off">关闭（模型名保持原样）</option>
-            <option value="prefix">前缀（如 zcode-GLM-5.3）</option>
-            <option value="suffix">后缀（如 GLM-5.3-zcode）</option>
+            <option value="prefix">前缀（如 zcodeglobal-GLM-5.3）</option>
+            <option value="suffix">后缀（如 GLM-5.3-zcodeglobal）</option>
           </select>
         </label>
       </div>
@@ -702,6 +748,12 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 
   function pill(text, kind) {
     return el("span", text, "pill" + (kind ? " " + kind : ""));
+  }
+
+  // shortReason 把上游错误正文压成一行：额度格只有一列宽，完整原因放 title。
+  function shortReason(text) {
+    var flat = String(text || "").replace(/\s+/g, " ").trim();
+    return flat.length > 42 ? flat.slice(0, 42) + "…" : flat;
   }
 
   // vendorChipClass 把供应商标识哈希到 v0..v5，交给 CSS 上彩色芯片底色。
@@ -1194,8 +1246,16 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
           row.appendChild(el("td", "--", "muted"));
         }
       } else if (!quota.ok) {
-        row.appendChild(el("td", "-- / --", "muted"));
-        row.appendChild(el("td", "--", "muted"));
+        // 失败原因必须看得见：只渲染「--」时用户分不清是凭证失效、上游抖动
+        // 还是本来就查不到，也就不知道该重新授权还是稍后再查。后端已经把
+        // 原因写进缓存的 message，这里只负责展示。
+        var reason = quota.message || "额度查询失败";
+        var remainCell = el("td", "-- / --", "muted");
+        remainCell.title = reason;
+        row.appendChild(remainCell);
+        var reasonCell = el("td", shortReason(reason), "muted");
+        reasonCell.title = reason;
+        row.appendChild(reasonCell);
       } else if (quota.unlimited) {
         row.appendChild(el("td", "无限"));
         row.appendChild(el("td", "—", "muted"));
@@ -1379,10 +1439,24 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     return api("POST", "/quotas", { account_ids: targets || [] }).then(function (data) {
       if (!data) return;
       var results = (data && data.results) || [];
-      var failed = results.filter(function (r) { return !r.ok; }).length;
+      var failures = results.filter(function (r) { return !r.ok; });
       if (!quiet) {
-        banner(failed ? "warn" : "ok",
-          "额度查询完成：" + results.length + " 个账号" + (failed ? "，" + failed + " 个失败" : ""), 5000);
+        if (!failures.length) {
+          banner("ok", "额度查询完成：" + results.length + " 个账号", 5000);
+        } else {
+          // 只给「N 个失败」时用户不知道是哪个账号、什么原因，只能逐个试；
+          // 逐条列出前 5 个，其余折叠成计数，避免横幅无限长。
+          var detail = failures.slice(0, 5).map(function (r) {
+            var who = r.label || r.name || r.auth_id || "未知账号";
+            var vendor = r.vendor_name || r.vendor_id || "未知供应商";
+            return vendor + " / " + who + "：" + (r.message || "未知错误");
+          });
+          if (failures.length > detail.length) {
+            detail.push("…等 " + failures.length + " 个账号失败");
+          }
+          banner("warn", "额度查询完成：" + results.length + " 个账号，" +
+            failures.length + " 个失败\n" + detail.join("\n"), 12000);
+        }
       }
       return loadStatus(true);
     }).catch(function (err) {
@@ -1405,11 +1479,12 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     if (!account.supports_claim) return null;
     var claim = account.claim || {};
     if (claim.error) return { text: "套餐领取", disabled: false, title: claim.error };
-    // 未检测过（初次加载）或有待领套餐
-    if (!claim.checked_at || claim.claimable > 0) {
+    // 未检测过、没有投放结果、或有待领套餐时保持可点。
+    // available=0 表示没有投放证据，不能证明用户已领取全部套餐。
+    if (!claim.checked_at || claim.available === 0 || claim.claimable > 0) {
       return { text: "套餐领取", disabled: false, title: claim.claimable ? (claim.claimable + " 个套餐可领") : "点击查询可领套餐" };
     }
-    // 已全部领取
+    // 只有已确认存在投放，且所有投放都已持有，才能显示「已领取」。
     return { text: "已领取", disabled: true, title: "已领取当前全部套餐" };
   }
 
@@ -2057,7 +2132,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
           row.appendChild(cell);
           table.appendChild(row);
         });
-        card.appendChild(table);
+        card.appendChild(el("div", null, "table-scroll")).appendChild(table);
       }
       host.appendChild(card);
     });

@@ -16,6 +16,8 @@ func TestLooksLikeCredential_OpenCodeZEN(t *testing.T) {
 		{"zen specific field", "anything.json", map[string]any{"zen_key": "sk-abc"}, true},
 		{"api_key alone", "x.json", map[string]any{"api_key": "sk-abc"}, true},
 		{"has foreign marker", "x.json", map[string]any{"api_key": "sk-abc", "device_token": "dt-x"}, false},
+		// 声明了 vendor 的文件属于别家：api_key 太通用，不能靠字段名猜。
+		{"declared foreign vendor", "x.json", map[string]any{"api_key": "sk-abc", "vendor": "zcode"}, false},
 		{"token field alone is not enough", "x.json", map[string]any{"token": "sk-abc"}, false},
 		{"qoder pt prefix", "x.json", map[string]any{"token": "pt-abc"}, false},
 		{"empty", "x.json", nil, false},

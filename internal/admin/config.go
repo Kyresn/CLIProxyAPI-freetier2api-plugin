@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"freetier2api-plugin/internal/core"
 	"freetier2api-plugin/internal/state"
 )
 
@@ -346,23 +347,14 @@ func parseStrictBool(raw string) (value bool, ok bool) {
 	return false, false
 }
 
-// ParseClock 解析 HH:MM 格式的本地时间。
+// ParseClock 解析 HH:MM 格式的本地时间并转成可读错误。
+//
+// 判定本身在 core.ParseClock：后台排程解析同一个字段，两边各写一套曾导致
+// 「校验通过的设置排程不认」。
 func ParseClock(raw string) (hour, minute int, err error) {
-	trimmed := strings.TrimSpace(raw)
-	parts := strings.Split(trimmed, ":")
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("%q is not a HH:MM time", raw)
-	}
-	hour, errHour := strconv.Atoi(strings.TrimSpace(parts[0]))
-	if errHour != nil {
-		return 0, 0, fmt.Errorf("%q is not a HH:MM time", raw)
-	}
-	minute, errMinute := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if errMinute != nil {
-		return 0, 0, fmt.Errorf("%q is not a HH:MM time", raw)
-	}
-	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
-		return 0, 0, fmt.Errorf("%q is out of range (want 00:00-23:59)", raw)
+	hour, minute, ok := core.ParseClock(raw)
+	if !ok {
+		return 0, 0, fmt.Errorf("%q is not a HH:MM time (want 00:00-23:59)", raw)
 	}
 	return hour, minute, nil
 }

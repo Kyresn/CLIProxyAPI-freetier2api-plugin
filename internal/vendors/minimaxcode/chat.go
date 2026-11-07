@@ -710,8 +710,32 @@ func buildAgentQuery(cred *Credential, unixMS int64) string {
 	return strings.Join(parts, "&")
 }
 
+// signinTimezoneID 返回签到接口要求的 IANA 时区名。
+//
+// 上游按客户端上报的时区结算自然日；缺失时以 HTTP 200 + invalid timezone_id
+// 拒绝（不是 HTTP 错误，只看状态码会把失败当成功）。优先取凭证/本机时区名，
+// 容器里常见 "Local"/"UTC" 且偏移为 +08:00 时回落 Asia/Shanghai，其余回落 UTC。
+func signinTimezoneID(cred *Credential) string {
+	if cred != nil {
+		if tz := strings.TrimSpace(cred.TimezoneID); tz != "" {
+			return tz
+		}
+	}
+	now := time.Now()
+	if name := now.Location().String(); name != "" && name != "Local" && name != "UTC" {
+		return name
+	}
+	if _, offset := now.Zone(); offset == 8*60*60 {
+		return "Asia/Shanghai"
+	}
+	return "UTC"
+}
+
 // buildSigninQuery 构建签到、额度与账号信息接口的查询字符串。
-func buildSigninQuery(cred *Credential, unixMS int64, forSignature bool) string {
+//
+// 线上 URL 与参与签名的 URL 必须逐字节一致，因此这里只产出一份：曾经按
+// 「签名用/线上用」拆成两份，多出来的 op_ticket 让两边永远对不上。
+func buildSigninQuery(cred *Credential, unixMS int64) string {
 	cred.EnsureIdentifiers()
 	width := cred.ScreenWidth
 	if width == 0 {
@@ -738,6 +762,10 @@ func buildSigninQuery(cred *Credential, unixMS int64, forSignature bool) string 
 		{"app_id", "3001"},
 		{"version_code", "22201"},
 		{"unix", strconv.FormatInt(unixMS, 10)},
+		// timezone_id 是签到接口的**必填** query 参数（参考实现实测：只发
+		// timezone_offset 会被上游以 HTTP 200 + invalid timezone_id 拒绝）。
+		// 它与 timezone_offset 是两套口径，保留 offset 不影响既有对话请求。
+		{"timezone_id", signinTimezoneID(cred)},
 		{"timezone_offset", "28800"},
 		{"sys_language", "en"},
 		{"lang", "en"},
@@ -750,7 +778,6 @@ func buildSigninQuery(cred *Credential, unixMS int64, forSignature bool) string 
 		{"browser_language", "en-US"},
 		{"browser_platform", "Win32"},
 		{"user_id", userID},
-		{"op_ticket", "undefined"},
 		{"screen_width", strconv.Itoa(width)},
 		{"screen_height", strconv.Itoa(height)},
 		{"token", tokenParam},
@@ -759,10 +786,7 @@ func buildSigninQuery(cred *Credential, unixMS int64, forSignature bool) string 
 
 	var parts []string
 	for _, p := range pairs {
-		if p[0] == "op_ticket" && !forSignature {
-			continue
-		}
-		if p[1] == "" && p[0] != "op_ticket" {
+		if p[1] == "" {
 			continue
 		}
 		parts = append(parts, p[0]+"="+FormEncode(p[1]))
@@ -806,11 +830,10 @@ func buildAgentTarget(cred *Credential, baseURL, path, method, body string, stre
 // buildSigninTarget 构建对 Signin/Quota/UserInfo 端点的签名目标。
 func buildSigninTarget(cred *Credential, baseURL, path, method, body string) Target {
 	unixMS := time.Now().UnixMilli()
-	signQuery := buildSigninQuery(cred, unixMS, true)
-	wireQuery := buildSigninQuery(cred, unixMS, false)
-
-	signURL := path + "?" + signQuery
-	wireURL := baseURL + path + "?" + wireQuery
+	// 签名与线上共用同一个 query，只在 host 部分不同（YY 哈希覆盖原始 query）。
+	query := buildSigninQuery(cred, unixMS)
+	signURL := path + "?" + query
+	wireURL := baseURL + path + "?" + query
 
 	return Target{
 		Method:  method,

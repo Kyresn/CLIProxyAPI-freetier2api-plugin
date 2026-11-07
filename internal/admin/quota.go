@@ -218,16 +218,68 @@ func (s *Service) queryQuota(ctx context.Context, job quotaJob) (*pluginapi.Quot
 	if !okQuota {
 		return nil, core.QuotaUnsupported(job.vendor)
 	}
-	quota, errQuota := quotaProvider.Quota(ctx, job.credential)
-	if errQuota != nil && isAuthExpired(errQuota) {
-		// 凭证过期类错误：先保活刷新一次再重试。MiniMax 的 access token 只有
-		// 1 小时有效期，不刷新的话额度列会一直挂着 401，用户只能自己想到去点
-		// 「一键保活」——那条路还要求他先认出这是凭证问题。
-		if refreshed := s.refreshedCredential(ctx, "", job); refreshed != nil {
-			quota, errQuota = quotaProvider.Quota(ctx, refreshed)
-		}
+	return queryQuotaWithRetry(ctx,
+		func(credential *core.Credential) (*pluginapi.QuotaFetchResponse, error) {
+			return quotaProvider.Quota(ctx, credential)
+		},
+		job.credential,
+		func() *core.Credential {
+			return s.refreshedCredential(ctx, "", job.entry, job.vendor)
+		},
+	)
+}
+
+// queryQuotaWithRetry 执行一次额度查询并处理两种重试。
+//
+//   - 凭证过期（401）：先保活刷新一次，用新凭证重查。MiniMax 的 access token
+//     只有 1 小时有效期，不刷新的话额度列会一直挂着 401。
+//   - 传输层故障（transient）：上游 EOF / 连接重置在实测里成片出现，等待后
+//     重查一次；重试必须沿用刷新后的凭证，否则会把新 token 换回旧的再打一次 401。
+//
+// 拆成函数是为了可测：真实依赖（保活、账号池）由调用方注入。
+func queryQuotaWithRetry(
+	ctx context.Context,
+	query func(*core.Credential) (*pluginapi.QuotaFetchResponse, error),
+	credential *core.Credential,
+	refresh func() *core.Credential,
+) (*pluginapi.QuotaFetchResponse, error) {
+	quota, used, errQuota := withAuthRetry(credential, refresh, query)
+	if errQuota != nil && isTransientFailure(errQuota) && core.SleepContext(ctx, quotaRetryDelay) {
+		quota, errQuota = query(used)
 	}
 	return quota, errQuota
+}
+
+// withAuthRetry 在动作因凭证过期（401）失败时刷新一次凭证再重试。
+//
+// 返回最终结果、实际使用的凭证（重试时是刷新后的）与错误。刷新失败时保留原
+// 错误、不重试：用旧凭证再打一次只会得到同一个 401。
+func withAuthRetry[T any](
+	credential *core.Credential,
+	refresh func() *core.Credential,
+	action func(*core.Credential) (T, error),
+) (T, *core.Credential, error) {
+	result, errAction := action(credential)
+	if errAction == nil || !isAuthExpired(errAction) || refresh == nil {
+		return result, credential, errAction
+	}
+	refreshed := refresh()
+	if refreshed == nil {
+		return result, credential, errAction
+	}
+	result, errAction = action(refreshed)
+	return result, refreshed, errAction
+}
+
+// quotaRetryDelay 是瞬时故障重试前的等待。
+const quotaRetryDelay = 500 * time.Millisecond
+
+// isTransientFailure 判断错误是否属于「稍后重试可能成功」的传输层故障。
+//
+// 只认分类结果：按状态码猜（502/503 一律重试）会把「上游明确拒绝」也算进去。
+func isTransientFailure(err error) bool {
+	var failure *core.Failure
+	return errors.As(err, &failure) && failure.Kind == core.FailureKindTransient
 }
 
 // isAuthExpired 判断错误是否属于「凭证已过期/失效」类（401）。
@@ -237,7 +289,8 @@ func (s *Service) queryQuota(ctx context.Context, job quotaJob) (*pluginapi.Quot
 func isAuthExpired(err error) bool {
 	var failure *core.Failure
 	if errors.As(err, &failure) {
-		return failure.Kind == core.FailureKindCredential || failure.HTTPStatus() == http.StatusUnauthorized
+		// 只看归一后的状态码：403 的凭证类错误（无权限）刷新不会变好。
+		return failure.HTTPStatus() == http.StatusUnauthorized
 	}
 	var pluginErr *core.PluginError
 	if errors.As(err, &pluginErr) {
@@ -250,8 +303,8 @@ func isAuthExpired(err error) bool {
 //
 // 复用保活那条既有通道（它负责刷新 + 写盘 + 热更新宿主），额度查询因此不需要
 // 自己再造一套刷新逻辑。保活失败或账号消失时返回 nil，由调用方按原错误上报。
-func (s *Service) refreshedCredential(ctx context.Context, callbackID string, target quotaJob) *core.Credential {
-	authID := core.FirstNonEmpty(target.entry.ID, target.entry.Name)
+func (s *Service) refreshedCredential(ctx context.Context, callbackID string, entry core.HostAuth, vendor core.Vendor) *core.Credential {
+	authID := core.FirstNonEmpty(entry.ID, entry.Name)
 	if authID == "" {
 		return nil
 	}
@@ -262,7 +315,7 @@ func (s *Service) refreshedCredential(ctx context.Context, callbackID string, ta
 		EnabledRealms: s.deps.Config().EnabledRealms,
 	})
 	for _, account := range loaded {
-		if account.Vendor.ID() == target.vendor.ID() {
+		if account.Vendor.ID() == vendor.ID() {
 			return account.Credential
 		}
 	}

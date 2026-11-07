@@ -59,6 +59,20 @@ func writeAuthFile(t *testing.T, dir, name string, payload map[string]any) strin
 	return path
 }
 
+// TestCredentialVendorLabelResolvesRealVendor 锁定删除/停用日志里的 vendor 字段。
+//
+// issue #58：日志把文件名当 vendor 打印（vendor=codearts-codearts-user.json），
+// 排查时被误导。这里钉住「按凭证内容反查，查不到写 unknown」。
+func TestCredentialVendorLabelResolvesRealVendor(t *testing.T) {
+	registry := newDeleteTestRegistry(t)
+	if got := credentialVendorLabel(registry, []byte(`{"vendor":"traecn","uid":"u-1"}`), "traecn-u-1.json"); got != "traecn" {
+		t.Fatalf("vendor = %q, want traecn", got)
+	}
+	if got := credentialVendorLabel(registry, []byte(`{"foo":"bar"}`), "mystery.json"); got != "unknown" {
+		t.Fatalf("无法归属时应写 unknown，实际 %q", got)
+	}
+}
+
 // TestSafeAuthFileForDeleteRequiresNormalizedPath 锁定边界契约：删除校验只接受
 // 已经由 hostbridge 归一化的绝对路径。相对路径的解析在宿主边界做（见
 // hostbridge.ResolveAuthPath），端到端行为由 tests/integration 覆盖。

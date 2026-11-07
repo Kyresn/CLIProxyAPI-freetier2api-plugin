@@ -66,8 +66,8 @@ jobs:
         include:
           - { os: ubuntu-latest,  goos: linux,   goarch: amd64, ext: so,    cc: gcc,                   experimental: false }
           - { os: ubuntu-latest,  goos: linux,   goarch: arm64, ext: so,    cc: aarch64-linux-gnu-gcc, experimental: false }
-          - { os: macos-14,       goos: darwin,  goarch: arm64, ext: dylib, cc: clang,                 experimental: false }
-          - { os: macos-14,       goos: darwin,  goarch: amd64, ext: dylib, cc: 'clang -arch x86_64', experimental: true }
+          - { os: macos-15,       goos: darwin,  goarch: arm64, ext: dylib, cc: clang,                 experimental: false }
+          - { os: macos-15,       goos: darwin,  goarch: amd64, ext: dylib, cc: 'clang -arch x86_64', experimental: true }
           - { os: windows-latest, goos: windows, goarch: amd64, ext: dll,   cc: gcc,                   experimental: true }
     steps:
       - uses: actions/checkout@v4

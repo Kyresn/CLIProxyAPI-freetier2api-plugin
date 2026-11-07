@@ -10,7 +10,6 @@ import (
 
 	"freetier2api-plugin/cpasdk/pluginapi"
 	"freetier2api-plugin/internal/core"
-	"freetier2api-plugin/internal/hostbridge"
 )
 
 // adapter 是 core.Vendor 在 CodeArts 上的实现。
@@ -79,9 +78,18 @@ func (v *adapter) Match(fileName, provider string, raw map[string]any) bool {
 
 // ---- 模型 ----
 
-// StaticModels 返回模型清单（无需凭证）。
+// StaticModels 返回模型清单。
+//
+// 福利通道的模型是按凭证下发的（FetchBenefitModels 需要 AK/SK 签名），所以这里
+// 和 ModelsForAuth 一样借一个可用凭证探测：两条路径同源，控制台缓存才不会出现
+// 「刷新模型目录后少 5 个模型」（issue #58）。没有可用凭证时退回内置目录——
+// model.static 可能先于凭证加载被调用，报错会让宿主把整家供应商当成探测失败。
 func (v *adapter) StaticModels(ctx context.Context) ([]pluginapi.ModelInfo, error) {
-	models, errModels := FetchModels(ctx, nil)
+	probe, _ := core.ProbeNativeCredential(v.Env, v.ID(), func(c *core.Credential) (*Credential, bool) {
+		native, okNative := c.Native.(*Credential)
+		return native, okNative
+	})
+	models, errModels := FetchModels(ctx, probe)
 	if errModels != nil {
 		return nil, errModels
 	}
@@ -237,7 +245,7 @@ func (v *adapter) ExecuteStream(ctx context.Context, cred *core.Credential, req 
 		return core.ToPluginError(errStream)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return hostbridge.ForwardRawSSE(resp.Body, sink.Emit)
+	return ForwardStream(resp.Body, sink.Emit)
 }
 
 // ---- 额度与签到 ----
@@ -265,8 +273,10 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 		return nil, core.ToPluginError(errClaim)
 	}
 	return &core.CheckinResult{
-		Already: result.Already,
-		Message: result.Message,
+		Already:     result.Already,
+		Credit:      result.Credit,
+		Message:     result.Message,
+		NotRecorded: result.NotRecorded,
 	}, nil
 }
 

@@ -69,6 +69,35 @@ func ApplyClientHeaders(req *http.Request) {
 	req.Header.Set("x-client-channel", "official")
 }
 
+// grantClientPlatform 是登录奖励接口要求的平台枚举值。
+//
+// 参考实现依据桌面主进程 desktopDeviceIdentity.js：win32 → desktop-windows。
+// 该端点**要求**这个头，猜成 desktop-windows-x64 会被拒。
+const grantClientPlatform = "desktop-windows"
+
+// grantClientVersion 是登录奖励接口使用的客户端版本（带 v 前缀）。
+const grantClientVersion = "v1.0.35"
+
+// ApplyGrantHeaders 写入登录奖励接口的客户端识别头。
+//
+// 与 ApplyClientHeaders 刻意分开：对话域沿用既有抓包值，登录奖励端点按
+// 官方桌面客户端口径发送固定枚举与组织码。个人账号的 X-Org-Code 为空串，
+// 但该头必须存在（上游总是发送）。
+func ApplyGrantHeaders(req *http.Request, token, orgCode, deviceID string) {
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Org-Code", strings.TrimSpace(orgCode))
+	req.Header.Set("X-Raccoon-Language", "zh")
+	req.Header.Set("X-Client-Platform", grantClientPlatform)
+	req.Header.Set("X-Client-Version", grantClientVersion)
+	if trimmed := strings.TrimSpace(deviceID); trimmed != "" {
+		req.Header.Set("X-Client-Device-ID", trimmed)
+	}
+	if trimmed := strings.TrimSpace(token); trimmed != "" {
+		req.Header.Set("Authorization", "Bearer "+trimmed)
+	}
+}
+
 // ApplyChatHeaders 写入 chat 请求所需的全部头。
 func ApplyChatHeaders(req *http.Request, token string) {
 	req.Header.Set("Content-Type", "application/json")

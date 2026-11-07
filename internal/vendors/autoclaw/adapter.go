@@ -289,14 +289,25 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 	if errCheckin != nil {
 		return nil, core.ToPluginError(errCheckin)
 	}
-	message := fmt.Sprintf("签到成功：+%d 积分", result.Points)
 	if result.Already {
-		message = "今天已经签到过了（幂等，无新增）"
+		return &core.CheckinResult{
+			Already: true,
+			Message: "今天已经签到过了（幂等，无新增）",
+		}, nil
 	}
+	if !result.Claimed {
+		// code=0 但 data.success=false：窗口未开 / 无资格，本次没有领到积分。
+		// 记成成功会让控制台显示假性成功，并阻止当天后续重试。
+		return &core.CheckinResult{
+			NotRecorded: true,
+			Message:     core.FirstNonEmpty(result.Msg, "签到未完成（上游未发放积分）"),
+		}, nil
+	}
+	// 签到成功后上报登录活跃，服务端据此发放活动奖励；失败不影响签到结果。
+	TriggerLoginActive(ctx, v.resolveBaseURL(), native)
 	return &core.CheckinResult{
-		Already: result.Already,
 		Credit:  result.Points,
-		Message: message,
+		Message: fmt.Sprintf("签到成功：+%d 积分", result.Points),
 	}, nil
 }
 

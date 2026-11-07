@@ -83,6 +83,67 @@ func TestResolveVendorFallsBackToFileNameThenSniff(t *testing.T) {
 	}
 }
 
+// splitVendor 模拟「一个旧 ID 拆成 cn / global 两个实例」的供应商：
+// region 缺失时归 global，与 zcode 拆分的实际规则一致。
+type splitVendor struct {
+	fakeVendor
+	region string
+	legacy []string
+}
+
+func (v *splitVendor) LegacyIDs() []string { return v.legacy }
+
+func (v *splitVendor) Match(_ string, _ string, raw map[string]any) bool {
+	region := strings.ToLower(GetString(raw, "region"))
+	if region == "" {
+		region = "global"
+	}
+	return region == v.region
+}
+
+// greedyVendor 模拟「内容里有 api_key 就认领」的供应商（如 opencodezen）。
+type greedyVendor struct{ fakeVendor }
+
+func (v *greedyVendor) Match(_ string, _ string, raw map[string]any) bool {
+	return GetString(raw, "api_key") != ""
+}
+
+// TestResolveLegacyIDKeepsOwnership 锁住拆分后「旧 ID / 旧文件名」仍归本家族。
+//
+// 拆实例换掉了 vendorID，文件名 zcode-*.json 与 vendor=zcode 都不再命中现役
+// ID；若直接落到内容嗅探，先注册的 apikey 型供应商会把它抢走（线上真实发生：
+// ZCode 凭证被 opencodezen 认领）。旧标识只说明家族，归属必须落回该家族。
+func TestResolveLegacyIDKeepsOwnership(t *testing.T) {
+	registry := newTestRegistry(t,
+		&greedyVendor{fakeVendor{Meta: Meta{VendorID: "testgreedy"}}},
+		&splitVendor{fakeVendor: fakeVendor{Meta: Meta{VendorID: "testcn"}}, region: "cn"},
+		&splitVendor{fakeVendor: fakeVendor{Meta: Meta{VendorID: "testglobal"}}, region: "global", legacy: []string{"testold"}},
+	)
+	raw := map[string]any{"api_key": "k", "jwt_token": "j"}
+
+	cases := []struct {
+		name     string
+		fileName string
+		raw      map[string]any
+		want     string
+	}{
+		// 旧文件名 / 旧 vendor 字段都归它演变成的那个实例。
+		{"legacy file name", "testold-abc.json", raw, "testglobal"},
+		{"legacy file name beats sniffing", "testold-abc.json", map[string]any{"api_key": "k"}, "testglobal"},
+		{"legacy vendor field", "acc.json", map[string]any{"vendor": "testold"}, "testglobal"},
+		// 新实例自己的文件名照旧直接命中，不受旧 ID 影响。
+		{"current id file name", "testcn-abc.json", raw, "testcn"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := registry.Resolve(tc.fileName, "", tc.raw)
+			if !ok || got.ID() != tc.want {
+				t.Fatalf("Resolve(%q) = %v %v，want %s", tc.fileName, got, ok, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveVendorRejectsUnknown(t *testing.T) {
 	registry := newTestRegistry(t)
 	if _, ok := registry.Resolve("zzz.json", "", map[string]any{"foo": "bar"}); ok {
@@ -332,6 +393,39 @@ func TestToPluginError(t *testing.T) {
 }
 
 // quotaVendor 只实现额度能力，用于验证能力断言。
+// taskCatalogVendor 只实现任务目录能力，用来验证调度器按供应商声明的任务族过滤。
+type taskCatalogVendor struct {
+	fakeVendor
+	specs []TaskSpec
+}
+
+func (v *taskCatalogVendor) TaskSpecs() []TaskSpec { return v.specs }
+
+// TestSupportsScheduledKind 验证调度器按供应商能力过滤全局排程。
+//
+// issue #58：task_schedules 是全局的，dailybonus 只对国际版注册了实现；
+// 调度器仍对国内账号执行它，于是每 4 小时一条 ERROR。过滤依据必须是各家
+// 自己声明的 TaskSpecs，而不是「有没有实现 ScheduledRunner」。
+func TestSupportsScheduledKind(t *testing.T) {
+	vendor := &taskCatalogVendor{
+		fakeVendor: fakeVendor{Meta: Meta{VendorID: "cattest"}},
+		specs:      []TaskSpec{{Kind: "travel"}, {Kind: "activity"}},
+	}
+	if !SupportsScheduledKind(vendor, "travel") {
+		t.Fatal("已声明的任务族应判定为支持")
+	}
+	if !SupportsScheduledKind(vendor, " activity ") {
+		t.Fatal("kind 两侧空白应归一")
+	}
+	if SupportsScheduledKind(vendor, "dailybonus") {
+		t.Fatal("未声明的任务族应判定为不支持")
+	}
+	withoutCatalog := &fakeVendor{Meta: Meta{VendorID: "nocate"}}
+	if SupportsScheduledKind(withoutCatalog, "travel") {
+		t.Fatal("没有任务目录的供应商一律判定为不支持")
+	}
+}
+
 type quotaVendor struct{ fakeVendor }
 
 func (v *quotaVendor) Quota(context.Context, *Credential) (*pluginapi.QuotaFetchResponse, error) {

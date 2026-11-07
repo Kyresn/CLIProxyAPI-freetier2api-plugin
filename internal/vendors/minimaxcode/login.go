@@ -244,8 +244,17 @@ func LoginPoll(ctx context.Context, logins core.LoginSessions, state string, bas
 	}
 	cred.EnsureIdentifiers()
 
-	// 探测用户真实 ID 与 Agent ID
-	_, _, _, _ = fetchUserInfo(ctx, cred, baseURLOverride)
+	// 探测用户真实 ID 与 Agent ID。
+	//
+	// access token 必须先验证再落盘：上游偶尔回「成功形状」但 token 不可用，
+	// 写成凭证文件后账号会长期 401，用户只看到一个坏账号、还得自己猜原因。
+	// 只有凭证类失败才拒绝落盘——网络抖动不推翻一次已经成功的授权。
+	if _, _, _, errInfo := fetchUserInfo(ctx, cred, baseURLOverride); isCredentialFailure(errInfo) {
+		return &pluginapi.AuthLoginPollResponse{
+			Status:  pluginapi.AuthLoginStatusError,
+			Message: "授权已完成但凭证不可用，请重新发起登录（" + errInfo.Error() + "）",
+		}, nil
+	}
 	_ = prepare(ctx, cred, baseURLOverride, nil)
 
 	storageJSON, errStorage := cred.StorageJSON()
@@ -317,7 +326,14 @@ func RefreshCredential(ctx context.Context, cred *Credential, baseURLOverride st
 			core.GetString(payload, "error"),
 			fmt.Sprintf("HTTP %d", resp.StatusCode),
 		)
-		return nil, false, fmt.Errorf("minimax refresh token rejected: %s", errDesc)
+		// 必须是结构化错误：宿主只把 core.UpstreamError 的 401/403/402 当作
+		// 「凭证坏了」。纯 fmt.Errorf 会被当成上游抖动反复重试——账号既不标坏，
+		// 也没有任何重新授权提示，用户只能看到额度一直查不到。
+		failure := Classify(resp.StatusCode, errDesc)
+		if failure.Kind == core.FailureKindCredential {
+			failure.Msg = "MiniMax 授权已失效，请重新添加该账号授权（" + errDesc + "）"
+		}
+		return nil, false, failure
 	}
 
 	accessToken := core.GetString(payload, "access_token", "accessToken")

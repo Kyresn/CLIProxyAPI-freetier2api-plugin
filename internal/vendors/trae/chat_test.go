@@ -657,7 +657,7 @@ func TestCheckinSkipsWhenAlreadyCheckedIn(t *testing.T) {
 	}
 }
 
-func TestCheckinTreats9074AsRateLimit(t *testing.T) {
+func TestCheckinTreats9074AsBusy(t *testing.T) {
 	stubHost(t)
 	_, cfg := checkinServer(t,
 		`{"code":0,"enable":true,"checked_in":false,"credits":100}`,
@@ -671,16 +671,21 @@ func TestCheckinTreats9074AsRateLimit(t *testing.T) {
 	if !okFailure {
 		t.Fatalf("错误类型 = %T, want *core.Failure", errCheckin)
 	}
-	if failure.Kind != core.FailureKindRateLimit {
-		t.Errorf("9074 应分类为限流，得到 %q", failure.Kind)
+	if failure.Kind != core.FailureKindBusy {
+		t.Errorf("9074 应分类为 busy，得到 %q", failure.Kind)
 	}
 }
 
 func TestCheckinDeviceIDIsStable(t *testing.T) {
 	cred := testCredential()
 	first := CheckinDeviceID(cred)
-	if len(first) != 16 {
-		t.Fatalf("device id 长度 = %d, want 16", len(first))
+	if len(first) != 15 {
+		t.Fatalf("device id 长度 = %d, want 15", len(first))
+	}
+	for _, char := range first {
+		if char < '0' || char > '9' {
+			t.Fatalf("device id 必须全是数字: %q", first)
+		}
 	}
 	if second := CheckinDeviceID(cred); second != first {
 		t.Errorf("device id 不稳定: %s vs %s", first, second)
@@ -714,7 +719,7 @@ func TestFetchQuotaSumsCreditPacks(t *testing.T) {
 	if gotPayload["require_usage"] != true {
 		t.Errorf("require_usage = %v", gotPayload["require_usage"])
 	}
-	if gotPayload["req_source"] != float64(1) {
+	if gotPayload["req_source"] != float64(2) {
 		t.Errorf("req_source = %v", gotPayload["req_source"])
 	}
 	values := map[string]float64{}
@@ -756,12 +761,68 @@ func TestFetchQuotaHandlesUnlimitedPack(t *testing.T) {
 	}
 }
 
-func TestFetchQuotaGlobalUnsupported(t *testing.T) {
+// TestFetchQuotaGlobalUsesV1Endpoint 锁住国际版额度端点与区域头。
+//
+// 国际版额度路径是 v1（国内是 v2），且必须带 X-User-Region: SG / Package-Type:
+// stable；这三处任一写错都会被网关当成跨区请求拒绝。本机同一账号改前 401/1001、
+// 改后 200（期间也可能刷新过 token），这里只锁协议形态，不作为鉴权结论。
+func TestFetchQuotaGlobalUsesV1Endpoint(t *testing.T) {
 	stubHost(t)
+	var gotPath, gotRegion, gotPackage string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotRegion = r.Header.Get("X-User-Region")
+		gotPackage = r.Header.Get("Package-Type")
+		_, _ = w.Write([]byte(`{"user_entitlement_pack_list":[
+			{"entitlement_base_info":{"product_type":2,"quota":{"credits_limit":100}},"usage":{"credits_amount":25}}
+		]}`))
+	}))
+	defer server.Close()
+
 	cfg := ConfigFor(RegionGlobal)
-	_, errQuota := FetchQuota(context.Background(), testCredential(), cfg)
-	if errQuota == nil {
-		t.Fatal("国际版应报额度不支持")
+	cfg.QuotaHost = server.URL
+	cred := &Credential{
+		Vendor:      VendorIDGlobal,
+		Region:      RegionGlobal,
+		AccessToken: "test-access-token",
+		UID:         "2487573687317868",
+	}
+
+	quota, errQuota := FetchQuota(context.Background(), cred, cfg)
+	if errQuota != nil {
+		t.Fatalf("FetchQuota: %v", errQuota)
+	}
+	if gotPath != EpEntUsageGlobal {
+		t.Fatalf("国际版额度路径 = %q, want %q", gotPath, EpEntUsageGlobal)
+	}
+	if gotRegion != "SG" {
+		t.Fatalf("X-User-Region = %q, want SG", gotRegion)
+	}
+	if gotPackage != "stable" {
+		t.Fatalf("Package-Type = %q, want stable", gotPackage)
+	}
+	values := map[string]float64{}
+	for _, metric := range quota.Summary {
+		values[metric.Key] = metric.Value
+	}
+	if values["credit_total"] != 100 || values["credit_used"] != 25 || values["credit_remain"] != 75 {
+		t.Fatalf("国际版额度解析错误: %+v", values)
+	}
+}
+
+// TestClientHeadersByRegion 锁住国内侧仍是 CN / stable_cn，避免只测国际版把
+// 国内身份改坏。
+func TestClientHeadersByRegion(t *testing.T) {
+	cn := &Credential{Vendor: VendorIDCN, Region: RegionCN, AccessToken: "tok", UID: "42"}
+	global := &Credential{Vendor: VendorIDGlobal, Region: RegionGlobal, AccessToken: "tok", UID: "42"}
+
+	cnHeaders := checkinHeadersForUID(cn, "42")
+	if cnHeaders["X-User-Region"] != "CN" || cnHeaders["Package-Type"] != "stable_cn" {
+		t.Fatalf("国内版客户端头错误: region=%q package=%q", cnHeaders["X-User-Region"], cnHeaders["Package-Type"])
+	}
+	globalHeaders := checkinHeadersForUID(global, "42")
+	if globalHeaders["X-User-Region"] != "SG" || globalHeaders["Package-Type"] != "stable" {
+		t.Fatalf("国际版客户端头错误: region=%q package=%q", globalHeaders["X-User-Region"], globalHeaders["Package-Type"])
 	}
 }
 

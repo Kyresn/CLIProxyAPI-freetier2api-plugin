@@ -188,12 +188,17 @@ func (a *App) Registration() registration {
 		Capabilities: registrationCapabilities{
 			ResponseBeforeTranslator: true,
 
-			ModelProvider:         true,
-			AuthProvider:          true,
-			Executor:              true,
-			QuotaProvider:         true,
-			ManagementAPI:         true,
-			ExecutorModelScope:    string(pluginapi.ExecutorModelScopeBoth),
+			ModelProvider: true,
+			AuthProvider:  true,
+			Executor:      true,
+			QuotaProvider: true,
+			ManagementAPI: true,
+			// 本插件的模型全部按凭证下发（免费福利额度是按账号、按模型授予的），
+			// 没有「无凭证也可以用的静态目录」。声明 both 会让宿主把 static 目录
+			// 额外注册成一个 model-registry 客户端（plugin:<id>:<provider>:executor），
+			// 与 model.for_auth 的客户端各记一次引用；删除凭证只注销后者，前者留在
+			// 注册表里就是 /v1/models 上永不消失的幽灵模型（issue #58）。
+			ExecutorModelScope:    string(pluginapi.ExecutorModelScopeOAuth),
 			ExecutorInputFormats:  []string{formatChatCompletions},
 			ExecutorOutputFormats: []string{formatChatCompletions},
 		},

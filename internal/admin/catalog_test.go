@@ -417,3 +417,102 @@ func TestCreditsChangeTriggersPersist(t *testing.T) {
 		t.Fatalf("persisted credits = %q, want 0.80X after repricing", got)
 	}
 }
+
+// legacyVendor 实现 LegacyIDReporter，模拟「从单一 vendorID 拆成多实例」的供应商。
+type legacyVendor struct {
+	fakeVendor
+	legacy []string
+}
+
+func (v *legacyVendor) LegacyIDs() []string { return v.legacy }
+
+// newSplitCatalog 构造 zcodecn / zcodeglobal 两个实例，旧 ID 只在国际版上声明。
+func newSplitCatalog(t *testing.T) *Catalog {
+	t.Helper()
+	store := state.NewStore()
+	store.Configure(t.TempDir())
+	if _, err := store.Load(); err != nil {
+		t.Fatal(err)
+	}
+	registry := core.NewRegistry()
+	for _, vendor := range []core.Vendor{
+		&legacyVendor{fakeVendor: fakeVendor{Meta: core.Meta{VendorID: "zcodecn", VendorName: "ZCode CN", VendorRegion: "cn"}}},
+		&legacyVendor{
+			fakeVendor: fakeVendor{Meta: core.Meta{VendorID: "zcodeglobal", VendorName: "ZCode Global", VendorRegion: "global"}},
+			legacy:     []string{"zcode"},
+		},
+		// 第二个 cn 实例：让区域别名真的对应多家（现实如此），
+		// 才能验证「多实例区域别名不能被当成单一别名作用域」。
+		&fakeVendor{Meta: core.Meta{VendorID: "workbuddycn", VendorName: "WB CN", VendorRegion: "cn"}},
+	} {
+		if err := registry.Register(vendor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return NewCatalog(store, registry)
+}
+
+// TestLegacyVendorIDKeepsStoredConfig 锁住拆实例后存量配置继续生效。
+//
+// 拆实例换掉了注册表里的 vendorID，用户在 disabled_models 与模型别名里写的
+// <旧ID>:<模型> 必须继续落到演变成的那一个实例，否则升级即静默失效。
+func TestLegacyVendorIDKeepsStoredConfig(t *testing.T) {
+	manager := newSplitCatalog(t)
+
+	// 1) 旧前缀展开成现役键，且只落到国际版。
+	keys := manager.ExpandKeys("zcode:GLM-5.3")
+	if len(keys) != 1 || keys[0] != "zcodeglobal:GLM-5.3" {
+		t.Fatalf("旧前缀展开 = %#v", keys)
+	}
+
+	// 2) 旧前缀的禁用项生效，且不误伤国内版。
+	manager.Configure(ModelSettings{DisabledModels: []string{"zcode:GLM-5.3"}})
+	if !manager.IsDisabled("zcodeglobal", "GLM-5.3") {
+		t.Fatal("旧前缀禁用项应对国际版生效")
+	}
+	if manager.IsDisabled("zcodecn", "GLM-5.3") {
+		t.Fatal("旧前缀禁用项不应影响国内版")
+	}
+	// 带前缀的模型 ID 也要按同一规则判定（客户端可直接请求 vendor:model）。
+	if !manager.IsDisabled("zcodeglobal", "zcode:GLM-5.3") || manager.IsDisabled("zcodecn", "zcode:GLM-5.3") {
+		t.Fatal("带前缀的模型 ID 禁用判定错误")
+	}
+
+	// 3) 存量别名键迁移到现役键：读、反查、清除都要通。
+	manager.ReloadFromState(state.State{ModelAliases: map[string]string{"zcode:GLM-5.3": "my-glm"}})
+	if got := manager.AliasFor("zcodeglobal", "GLM-5.3"); got != "my-glm" {
+		t.Fatalf("存量别名未迁移，AliasFor = %q", got)
+	}
+	if got := manager.ResolveOutboundModel("zcodeglobal", "my-glm"); got != "GLM-5.3" {
+		t.Fatalf("存量别名未参与反查，ResolveOutboundModel = %q", got)
+	}
+	if vendorID, bare := manager.VendorForAliasScope("zcode:GLM-5.3"); vendorID != "zcodeglobal" || bare != "GLM-5.3" {
+		t.Fatalf("别名作用域 = (%q, %q)，want (zcodeglobal, GLM-5.3)", vendorID, bare)
+	}
+	manager.SetAlias("zcodeglobal", "GLM-5.3", "")
+	if got := manager.AliasFor("zcodeglobal", "GLM-5.3"); got != "" {
+		t.Fatalf("清除后别名仍存在：%q", got)
+	}
+	if stored := manager.store.Snapshot().ModelAliases; len(stored) != 0 {
+		t.Fatalf("清除后落盘仍有别名键：%#v", stored)
+	}
+
+	// 4) 区域别名对应多个实例，无法归一成单一别名作用域，交给接口拒绝。
+	if vendorID, _ := manager.VendorForAliasScope("cn:GLM-5.3"); vendorID != "" {
+		t.Fatalf("多实例区域别名不应被当成单实例作用域：%q", vendorID)
+	}
+	// 区域下只有一个实例时归一成它，别名键才能被读回。
+	if vendorID, bare := manager.VendorForAliasScope("global:GLM-5.3"); vendorID != "zcodeglobal" || bare != "GLM-5.3" {
+		t.Fatalf("单实例区域别名 = (%q, %q)", vendorID, bare)
+	}
+}
+
+// TestLegacyVendorIDExpandsExtraModels 锁住 extra_models 里的旧前缀。
+func TestLegacyVendorIDExpandsExtraModels(t *testing.T) {
+	manager := newSplitCatalog(t)
+	manager.Configure(ModelSettings{ExtraModels: []string{"zcode:GLM-5.3"}})
+	extra := manager.ExtraModels()
+	if len(extra) != 1 || extra[0].OwnedBy != "zcodeglobal" || extra[0].ID != "GLM-5.3" {
+		t.Fatalf("extra models = %#v", extra)
+	}
+}

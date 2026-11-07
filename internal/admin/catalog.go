@@ -144,8 +144,11 @@ func (c *Catalog) RealmEnabled(region string) bool {
 // ExpandKeys 把模型标识展开成查询键。
 //
 //   - 裸名：原样返回（对所有供应商生效）；
-//   - 供应商 ID 前缀：规范 vendorKey；
+//   - 供应商 ID / 拆分前的旧 ID 前缀：规范成它对应的实例 vendorKey；
 //   - 区域别名：展开成该区域每家供应商的 vendorKey。
+//
+// 旧 ID 的展开是「拆实例后存量配置不失效」的关键：用户写的 zcode:GLM-5.3
+// 会落到 zcodeglobal:GLM-5.3，无需手工迁移。
 func (c *Catalog) ExpandKeys(modelID string) []string {
 	trimmed := strings.TrimSpace(modelID)
 	if trimmed == "" {
@@ -155,19 +158,15 @@ func (c *Catalog) ExpandKeys(modelID string) []string {
 	if prefix == "" {
 		return []string{bare}
 	}
-	if _, okVendor := c.registry.ByID(prefix); okVendor {
-		return []string{c.registry.ModelKeyFor(prefix, bare)}
+	ids := c.registry.VendorIDsForPrefix(prefix)
+	if len(ids) == 0 {
+		return []string{bare}
 	}
-	keys := make([]string, 0, 4)
-	for _, vendor := range c.registry.Vendors() {
-		if vendor.Region() == prefix {
-			keys = append(keys, c.registry.ModelKeyFor(vendor.ID(), bare))
-		}
+	keys := make([]string, 0, len(ids))
+	for _, id := range ids {
+		keys = append(keys, c.registry.ModelKeyFor(id, bare))
 	}
-	if len(keys) > 0 {
-		return keys
-	}
-	return []string{bare}
+	return keys
 }
 
 // ExpandDisabledList 展开配置里的禁用项并稳定排序。
@@ -203,7 +202,7 @@ func (c *Catalog) IsDisabled(vendorID, modelID string) bool {
 		return false
 	}
 	if prefix, rest := c.registry.SplitModelID(bare); prefix != "" {
-		if vendor, okVendor := c.vendorForPrefix(prefix); okVendor && vendor.ID() != vendorID {
+		if !c.prefixCoversVendor(prefix, vendorID) {
 			return false
 		}
 		bare = rest
@@ -233,17 +232,18 @@ func (c *Catalog) registeredLocked(vendorID, modelID string) bool {
 	return false
 }
 
-// vendorForPrefix 把限定前缀（供应商 ID 或区域别名）解析成供应商实例。
-func (c *Catalog) vendorForPrefix(prefix string) (core.Vendor, bool) {
-	if vendor, okVendor := c.registry.ByID(prefix); okVendor {
-		return vendor, true
-	}
-	for _, vendor := range c.registry.Vendors() {
-		if vendor.Region() == prefix {
-			return vendor, true
+// prefixCoversVendor 报告限定前缀是否覆盖该供应商实例。
+//
+// 前缀可能写成区域别名（cn:model 对区域内每家都成立），因此不能用
+// 「解析成唯一实例」判定，否则同区域除首家外的实例都会被漏判。
+func (c *Catalog) prefixCoversVendor(prefix, vendorID string) bool {
+	vendorID = strings.ToLower(strings.TrimSpace(vendorID))
+	for _, id := range c.registry.VendorIDsForPrefix(prefix) {
+		if id == vendorID {
+			return true
 		}
 	}
-	return nil, false
+	return false
 }
 
 // FilterForVendor 剔除某供应商下被禁用的模型。
@@ -683,10 +683,28 @@ func aliasScopedKey(vendorID, modelID string) string {
 	return strings.ToLower(strings.TrimSpace(vendorID)) + ":" + strings.TrimSpace(modelID)
 }
 
+// canonicalAliasKey 把别名键里的旧前缀改写成现役实例 ID。
+//
+// 拆实例后旧 vendorID 从注册表消失，存量别名键 <旧ID>:<模型> 若不改写，
+// AliasFor / ResolveOutboundModel 按现役 ID 索引就永远读不到（用户设置
+// 静默失效），SetAlias 也清不掉它。区域别名对应多个实例、无法归一，原样保留。
+func (c *Catalog) canonicalAliasKey(key string) string {
+	key = strings.TrimSpace(key)
+	prefix, bare := c.registry.SplitModelID(key)
+	if prefix == "" {
+		return key
+	}
+	ids := c.registry.VendorIDsForPrefix(prefix)
+	if len(ids) != 1 {
+		return key
+	}
+	return aliasScopedKey(ids[0], bare)
+}
+
 func (c *Catalog) reloadAliasesLocked(aliases map[string]string) {
 	next := make(map[string]string, len(aliases))
 	for key, alias := range aliases {
-		trimmedKey := strings.TrimSpace(key)
+		trimmedKey := c.canonicalAliasKey(key)
 		trimmedAlias := strings.TrimSpace(alias)
 		if trimmedKey == "" || trimmedAlias == "" {
 			continue
@@ -809,6 +827,7 @@ func (c *Catalog) untagModelID(vendorID, requested string) []string {
 // SetAlias 设置或清除某模型的别名。
 //
 // 同一供应商内别名唯一：写入时清掉占用同名别名的旧模型，否则反查会命中两条。
+// 落盘时顺带把旧前缀键改写成现役键，旧配置自然迁移，不会留下清不掉的残留。
 func (c *Catalog) SetAlias(vendorID, bare, alias string) {
 	if c.store == nil {
 		return
@@ -817,25 +836,23 @@ func (c *Catalog) SetAlias(vendorID, bare, alias string) {
 	alias = strings.TrimSpace(alias)
 	var next map[string]string
 	c.store.Mutate(func(s *state.State) {
-		if s.ModelAliases == nil {
-			s.ModelAliases = map[string]string{}
+		next = make(map[string]string, len(s.ModelAliases)+1)
+		for key, value := range s.ModelAliases {
+			next[c.canonicalAliasKey(key)] = value
 		}
 		s.RestartPending = true
 		if alias == "" {
-			delete(s.ModelAliases, scoped)
+			delete(next, scoped)
 		} else {
 			prefix := strings.ToLower(strings.TrimSpace(vendorID)) + ":"
-			for existing, existingAlias := range s.ModelAliases {
+			for existing, existingAlias := range next {
 				if existing != scoped && strings.EqualFold(existingAlias, alias) && strings.HasPrefix(existing, prefix) {
-					delete(s.ModelAliases, existing)
+					delete(next, existing)
 				}
 			}
-			s.ModelAliases[scoped] = alias
+			next[scoped] = alias
 		}
-		next = make(map[string]string, len(s.ModelAliases))
-		for key, value := range s.ModelAliases {
-			next[key] = value
-		}
+		s.ModelAliases = next
 	})
 	c.mu.Lock()
 	c.reloadAliasesLocked(next)
@@ -843,8 +860,17 @@ func (c *Catalog) SetAlias(vendorID, bare, alias string) {
 }
 
 // VendorForAliasScope 解析 <vendor>:<model> 形式，供管理接口校验。
+//
+// 返回的是**现役实例 ID**（旧前缀唯一对应一个实例时归一）：别名键必须与
+// AliasFor / ResolveOutboundModel 的索引键一致，否则出现「设置成功却读不回
+// 来」。区域别名对应多家供应商、无法归一，返回空由接口拒绝。
 func (c *Catalog) VendorForAliasScope(scope string) (string, string) {
-	return c.registry.SplitModelID(strings.TrimSpace(scope))
+	prefix, bare := c.registry.SplitModelID(strings.TrimSpace(scope))
+	ids := c.registry.VendorIDsForPrefix(prefix)
+	if len(ids) != 1 {
+		return "", ""
+	}
+	return ids[0], bare
 }
 
 // StaticModels 返回所有启用且有凭证的供应商的模型并集（同名合并）。
@@ -929,10 +955,13 @@ func (c *Catalog) ExtraModels() []pluginapi.ModelInfo {
 		if bare == "" {
 			continue
 		}
-		if vendorID, bareModel := c.registry.SplitModelID(bare); vendorID != "" {
-			if vendor, okVendor := c.registry.ByID(vendorID); okVendor &&
-				c.RealmEnabled(vendor.Region()) && !c.IsDisabled(vendor.ID(), bareModel) {
-				out = append(out, c.extraModelInfo(vendor.ID(), bareModel, settings))
+		if prefix, bareModel := c.registry.SplitModelID(bare); prefix != "" {
+			for _, vendorID := range c.registry.VendorIDsForPrefix(prefix) {
+				vendor, okVendor := c.registry.ByID(vendorID)
+				if !okVendor || !c.RealmEnabled(vendor.Region()) || c.IsDisabled(vendorID, bareModel) {
+					continue
+				}
+				out = append(out, c.extraModelInfo(vendorID, bareModel, settings))
 			}
 			continue
 		}

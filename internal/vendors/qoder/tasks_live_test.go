@@ -41,7 +41,7 @@ func resolveLiveIdentity(cred *Credential) MachineIdentity {
 		"qoder_machine_token": os.Getenv("QODER_LIVE_MACHINE_TOKEN"),
 		"qoder_machine_type":  os.Getenv("QODER_LIVE_MACHINE_TYPE"),
 		"qoder_machine_code":  os.Getenv("QODER_LIVE_MACHINE_CODE"),
-	})
+	}, MachineIdentity{})
 }
 
 // configureQoderProbeHost 装上把出站请求真发到上游的宿主。

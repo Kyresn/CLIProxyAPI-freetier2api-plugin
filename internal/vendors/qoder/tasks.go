@@ -435,9 +435,20 @@ func campaignsCheckin(ctx context.Context, region Region, bearer string, identit
 	// 今天 10:00 开启的那一轮才算今天领的。
 	var current *campaignInfo
 	var past *campaignInfo
+	// blocked 记录第一条「可领但成就未完成」的活动：没有可领活动时用它给出
+	// 可操作的原因，而不是笼统的「无可用签到活动」。
+	var blocked *campaignInfo
 	for index := range campaigns {
 		campaign := &campaigns[index]
 		if campaign.ActionType != "CLAIM_BENEFIT" {
+			continue
+		}
+		// 成就未完成的 CLAIMABLE 活动**不能**被当成当前轮去领取：上游会拒绝，
+		// 而同一列表里今天已领的每日活动会被它覆盖，导致后续轮次误报失败。
+		if campaignAchievementBlocked(campaign) {
+			if blocked == nil {
+				blocked = campaign
+			}
 			continue
 		}
 		if campaign.StartAt <= 0 {
@@ -520,10 +531,33 @@ func campaignsCheckin(ctx context.Context, region Region, bearer string, identit
 		result.Message = fmt.Sprintf("上一轮领取窗口（%s）已结束且未领取，官方不补领", result.WindowDate)
 		return result
 	}
+	if blocked != nil {
+		// 有活动，但都被成就门槛挡住：给出「先完成哪个成就」，而不是「无活动」。
+		result.Status = CheckinNoCampaign
+		result.NotRecorded = true
+		result.CampaignID = blocked.CampaignID
+		result.Message = achievementMessage(blocked)
+		return result
+	}
 	result.Status = CheckinNoCampaign
 	result.NotRecorded = true
 	result.Message = noCampaignMessage(region, identity)
 	return result
+}
+
+// campaignAchievementBlocked 报告活动是否「可领但成就未完成」。
+//
+// 这类活动在列表里仍是 CLAIMABLE，直接领取会被上游拒绝；选择当前轮时
+// 必须跳过，否则会覆盖同一列表里今天已领的每日活动，把「今日已领取」
+// 误报成成就未完成。
+func campaignAchievementBlocked(campaign *campaignInfo) bool {
+	if campaign == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(campaign.ClaimStatus), "CLAIMED") {
+		return false
+	}
+	return strings.TrimSpace(campaign.RequiredAchievementKey) != "" && !campaign.AchievementCompleted
 }
 
 // noCampaignMessage 说明「没有可领取活动」的真实原因。
@@ -583,12 +617,25 @@ func claimCampaign(ctx context.Context, region Region, bearer string, identity M
 		result.Status = CheckinAlreadyClaimed
 		result.Message = "今日已领取"
 		return result
+	case "ACHIEVEMENT_NOT_COMPLETED", "ACHIEVEMENT_NOT_COMPLETE", "ACHIEVEMENT_REQUIRED":
+		// 领取时上游才校验成就：如实告知需要先完成哪个成就。
+		result.Status = CheckinNoCampaign
+		result.NotRecorded = true
+		result.Message = achievementMessage(target)
+		return result
 	case "":
 		result.Status = CheckinError
 		result.NotRecorded = true
 		result.Message = fmt.Sprintf("领取响应缺少状态: %s", core.Truncate(raw, 300))
 		return result
 	default:
+		if strings.Contains(strings.ToUpper(claim.FailureCode), "ACHIEVEMENT") ||
+			strings.Contains(strings.ToUpper(claim.ErrorCode), "ACHIEVEMENT") {
+			result.Status = CheckinNoCampaign
+			result.NotRecorded = true
+			result.Message = achievementMessage(target)
+			return result
+		}
 		result.Status = CheckinNoCampaign
 		result.NotRecorded = true
 		result.Message = fmt.Sprintf("上游状态 %s，未领取%s", claim.Status, claimFailureSuffix(claim))

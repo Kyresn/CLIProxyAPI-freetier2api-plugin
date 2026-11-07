@@ -284,6 +284,12 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 		if errBonus != nil {
 			return nil, errBonus
 		}
+		if result.NotRecorded {
+			return &core.CheckinResult{
+				NotRecorded: true,
+				Message:     core.FirstNonEmpty(result.Message, "国际版每日奖励尚未完成"),
+			}, nil
+		}
 		if result.Already {
 			return &core.CheckinResult{
 				Already: true,
@@ -291,7 +297,8 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 			}, nil
 		}
 		return &core.CheckinResult{
-			Message: fmt.Sprintf("活跃信标已上报，今日已点亮（已连续点亮 %d 天），奖励积分次日凌晨发放", result.Streak),
+			Message: core.FirstNonEmpty(result.Message,
+				fmt.Sprintf("活跃信标已上报，今日已点亮（已连续点亮 %d 天），奖励积分次日凌晨发放", result.Streak)),
 		}, nil
 	}
 	result, errCheckin := client.DailyCheckin(native)
@@ -299,14 +306,17 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 		return nil, errCheckin
 	}
 	message := "今天已经签到过了（幂等，无新增）"
-	if !result.Already {
+	if result.NotRecorded {
+		message = core.FirstNonEmpty(result.Message, "本次未领取到签到奖励")
+	} else if !result.Already {
 		message = fmt.Sprintf("签到成功：+%d 积分 +%d 能量", result.Credit, result.Energy)
 	}
 	return &core.CheckinResult{
-		Already: result.Already,
-		Credit:  result.Credit,
-		Energy:  result.Energy,
-		Message: message,
+		Already:     result.Already,
+		Credit:      result.Credit,
+		Energy:      result.Energy,
+		Message:     message,
+		NotRecorded: result.NotRecorded,
 	}, nil
 }
 

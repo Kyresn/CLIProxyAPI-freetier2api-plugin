@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -334,22 +335,52 @@ func FirstNonZero(values ...int64) int64 {
 	return 0
 }
 
-// IntFromAny 把 JSON 数值转成 int（缺失或非法返回 0）。
-func IntFromAny(value any) int {
+// ParseClock 解析 HH:MM 形式的本地时刻（00:00-23:59）。
+//
+// 配置校验与后台排程共用这一份判定：两边各写一套曾是真实的分歧来源——
+// 校验通过的时刻排程解析不出来，自动签到静默退回默认小时。
+func ParseClock(raw string) (hour, minute int, ok bool) {
+	parts := strings.Split(strings.TrimSpace(raw), ":")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	hour, errHour := strconv.Atoi(strings.TrimSpace(parts[0]))
+	minute, errMinute := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if errHour != nil || errMinute != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return 0, 0, false
+	}
+	return hour, minute, true
+}
+
+// FloatFromAny 宽容解析数字：接受 JSON 数字、json.Number 与数字字符串。
+//
+// 上游同一个字段在不同接口 / 不同版本上可能下发 12 / "12" / null，严格解码会
+// 让整条响应解析失败，把一次成功签到报成 decode 错误。无法解析返回 0。
+func FloatFromAny(value any) float64 {
 	switch number := value.(type) {
 	case float64:
-		return int(number)
-	case int64:
-		return int(number)
-	case int:
 		return number
+	case float32:
+		return float64(number)
+	case int:
+		return float64(number)
+	case int64:
+		return float64(number)
 	case json.Number:
-		parsed, errParse := number.Int64()
-		if errParse == nil {
-			return int(parsed)
+		if parsed, errParse := number.Float64(); errParse == nil {
+			return parsed
+		}
+	case string:
+		if parsed, errParse := strconv.ParseFloat(strings.TrimSpace(number), 64); errParse == nil {
+			return parsed
 		}
 	}
 	return 0
+}
+
+// IntFromAny 把 JSON 数值转成 int（缺失或非法返回 0，小数截断）。
+func IntFromAny(value any) int {
+	return int(FloatFromAny(value))
 }
 
 // StringField 读取 map 中的字符串字段（去空白）。

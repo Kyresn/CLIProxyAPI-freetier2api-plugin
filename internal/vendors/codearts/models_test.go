@@ -413,3 +413,25 @@ func TestModelsFromCatalogFallsBack(t *testing.T) {
 		t.Fatalf("上下文兜底 = %d, want 202752", models[0].ContextWindow)
 	}
 }
+
+// TestMergeBenefitModelsIgnoresCase 锁定注册 ID 的大小写归一。
+//
+// issue #58：内置目录写 kimi-k2.6-VL、福利目录写 kimi-k2.6-vl，按字面比较会把
+// 同一个模型注册成两条 ID；注销凭证只清掉一条，另一条停在 refcount 1 成为幽灵模型。
+func TestMergeBenefitModelsIgnoresCase(t *testing.T) {
+	base := []Model{{ID: "kimi-k2.6-VL"}, {ID: "GLM-5.2"}}
+	benefit := []Model{
+		{ID: "kimi-k2.6-vl", Benefit: true},
+		{ID: "glm-5.3", Benefit: true},
+	}
+	merged := mergeBenefitModels(base, benefit)
+	if len(merged) != 3 {
+		t.Fatalf("merged = %+v, want 3 个模型", merged)
+	}
+	if merged[0].ID != "kimi-k2.6-VL" {
+		t.Fatalf("应保留内置目录的写法，实际 %q", merged[0].ID)
+	}
+	if merged[2].ID != "glm-5.3" || !merged[2].Benefit {
+		t.Fatalf("福利专属模型应追加在末尾，实际 %+v", merged[2])
+	}
+}

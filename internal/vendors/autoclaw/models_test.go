@@ -17,6 +17,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"freetier2api-plugin/internal/hostbridge/hostbridgetest"
 )
 
 // modelConfigTopLevelFixture 是上游实测响应的结构（数值按真实值）。
@@ -34,8 +36,12 @@ const modelConfigEnvelopeFixture = `{"code":0,"msg":"SUCCESS","data":{"models":[
  {"id":"legacy-model","name":"Legacy","contextWindow":200000,"maxTokens":8192}]}}`
 
 // serveModels 起一个只服务 ModelsConfigPath 的桩，并断言带了鉴权头。
+//
+// 出站桥也在这一层装上：用例只要拿到桩地址就必须能真的出站，避免依赖
+// 同包其它用例留下的全局配置。
 func serveModels(t *testing.T, body string) string {
 	t.Helper()
+	hostbridgetest.UseLoopbackHost(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != ModelsConfigPath {
 			t.Errorf("path = %q, want %q", r.URL.Path, ModelsConfigPath)
@@ -51,7 +57,6 @@ func serveModels(t *testing.T, body string) string {
 }
 
 func TestFetchModelsParsesTopLevelModels(t *testing.T) {
-	useLoopbackHost(t)
 	baseURL := serveModels(t, modelConfigTopLevelFixture)
 
 	models, errFetch := FetchModels(context.Background(), baseURL, "tok-abc", RegionGlobal)
@@ -81,7 +86,6 @@ func TestFetchModelsParsesTopLevelModels(t *testing.T) {
 }
 
 func TestFetchModelsStillParsesEnvelope(t *testing.T) {
-	useLoopbackHost(t)
 	baseURL := serveModels(t, modelConfigEnvelopeFixture)
 
 	models, errFetch := FetchModels(context.Background(), baseURL, "tok-abc", RegionGlobal)
@@ -94,7 +98,6 @@ func TestFetchModelsStillParsesEnvelope(t *testing.T) {
 }
 
 func TestFetchModelsErrorsOnUnknownShape(t *testing.T) {
-	useLoopbackHost(t)
 	// 解析成功但没有任何模型：必须报错，而不是静默返回空清单。
 	baseURL := serveModels(t, `{"code":0,"msg":"SUCCESS","data":{}}`)
 

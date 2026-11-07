@@ -321,15 +321,21 @@ func modelsFromCatalog(body []byte, errFetch error, benefit []Model) []Model {
 }
 
 // mergeBenefitModels 把福利通道模型并进清单，已存在的 ID 不重复添加。
+//
+// 比较按大小写归一：内置目录写 kimi-k2.6-VL、福利目录写 kimi-k2.6-vl，按字面
+// 比较会把同一个模型注册成两条 ID——注销凭证只清掉一条，另一条停在 refcount 1
+// 成为幽灵模型（issue #58）。保留先出现的写法（内置目录），注册前只在这里归一。
 func mergeBenefitModels(base, benefit []Model) []Model {
 	seen := make(map[string]bool, len(base))
 	for _, model := range base {
-		seen[model.ID] = true
+		seen[strings.ToLower(model.ID)] = true
 	}
 	for _, model := range benefit {
-		if seen[model.ID] {
+		key := strings.ToLower(model.ID)
+		if seen[key] {
 			continue
 		}
+		seen[key] = true
 		base = append(base, model)
 	}
 	return base

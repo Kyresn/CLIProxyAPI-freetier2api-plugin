@@ -7,9 +7,15 @@ package qoder
 // 因此解析要尽可能宽，而**归属判定要尽可能严**——宽进严出。
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 
 	"freetier2api-plugin/internal/core"
 )
@@ -25,7 +31,7 @@ const (
 	protocolName = "qoder"
 )
 
-// Region / RegionCN / RegionGlobal / NormalizeRegion 定义在 endpoints.go
+// Region / RegionCN / RegionGlobal / NormalizeRegion 定义在 chat.go
 // ——它们同时服务端点表，属于协议层的基础设施。
 
 // VendorIDFor 返回该区域对应的供应商标识。
@@ -231,27 +237,221 @@ func (m MachineIdentity) Native() bool { return m.Token != "" && m.Type != "" }
 // DesktopVersion 是活动平台认的桌面端版本（cosy-version 头）。
 const DesktopVersion = "0.4.8"
 
-// ResolveIdentity 组装本次签到要用的设备身份。
+// ResolveIdentity 组装本次请求要用的设备身份。
 //
-// cred 提供账号自带的身份字段（凭证文件里手写的 machine_token / machine_type），
-// raw 是插件全局配置（qoder_machine_token / qoder_machine_type / …）。
-// 两者都没有时返回零值——调用方据此**不发**任何机器头。
-func ResolveIdentity(cred *Credential, raw map[string]string) MachineIdentity {
+// 优先级：
+//  1. 用户显式提供的身份（凭证字段 → 插件全局配置）——原样使用；
+//  2. 本机 Qoder 客户端签发的身份（local，见 LocalMachineIdentity）；
+//  3. 都没有时返回零值，调用方据此**不发**任何机器头。
+//
+// 用户只提供一半身份时整体作废且不回退本机：那是用户显式的错误配置，
+// 静默换成另一套身份会让问题更难排查。
+func ResolveIdentity(cred *Credential, raw map[string]string, local MachineIdentity) MachineIdentity {
 	identity := MachineIdentity{
 		Version: core.FirstNonEmpty(strings.TrimSpace(raw["qoder_desktop_version"]), DesktopVersion),
 	}
+	userProvided := false
 	if cred != nil {
 		identity.Token = strings.TrimSpace(cred.MachineToken)
 		identity.Type = strings.TrimSpace(cred.MachineType)
 		identity.Code = strings.TrimSpace(cred.MachineCode)
+		userProvided = identity.Token != "" || identity.Type != "" || identity.Code != ""
 	}
-	identity.Token = core.FirstNonEmpty(identity.Token, strings.TrimSpace(raw["qoder_machine_token"]))
-	identity.Type = core.FirstNonEmpty(identity.Type, strings.TrimSpace(raw["qoder_machine_type"]))
-	identity.Code = core.FirstNonEmpty(identity.Code, strings.TrimSpace(raw["qoder_machine_code"]))
-	if !identity.Native() {
-		// 只有一个头等于没有：上游要求成对，半套身份既解锁不了活动，还会
-		// 让请求形态偏离官方客户端。清空以免调用方误以为「有身份」。
-		return MachineIdentity{Version: identity.Version}
+	configToken := strings.TrimSpace(raw["qoder_machine_token"])
+	configType := strings.TrimSpace(raw["qoder_machine_type"])
+	configCode := strings.TrimSpace(raw["qoder_machine_code"])
+	userProvided = userProvided || configToken != "" || configType != "" || configCode != ""
+	identity.Token = core.FirstNonEmpty(identity.Token, configToken)
+	identity.Type = core.FirstNonEmpty(identity.Type, configType)
+	identity.Code = core.FirstNonEmpty(identity.Code, configCode)
+
+	if userProvided {
+		if !identity.Native() {
+			// 只有一个头等于没有：上游要求成对，半套身份既解锁不了活动，还会
+			// 让请求形态偏离官方客户端。清空以免调用方误以为「有身份」。
+			return MachineIdentity{Version: identity.Version}
+		}
+		return identity
 	}
-	return identity
+
+	if local.Native() {
+		local.Version = identity.Version
+		return local
+	}
+	return MachineIdentity{Version: identity.Version}
+}
+
+// LocalMachineIdentity 解析本机官方组件签发的设备身份；拿不到时返回零值。
+//
+// 上游对 cosy-machinetoken + cosy-machinetype 做精确校验：缺少这一对头时
+// /sash/api/v1/me/campaigns 只下发 VIEW_DETAILS，**不会**下发可领取的
+// CLAIM_BENEFIT，于是插件误判「今天没有可领取的活动」。
+//
+// 身份由官方组件 runtime-info 生成，且与 environment 参数绑定：
+//  1. 主路径：spawn 本机 Qoder 客户端的 runtime-info <env> --account-stdin；
+//  2. 退路：读取客户端缓存的 machine_token.json；
+//  3. 都拿不到时返回零值（不发机器头），由用户手工配置兜底。
+//
+// environment 必须按区域选：官方 asar 里 environment === 'global' ? 3 : 0，
+// 国内版账号配国际版 environment 会拿到另一套身份，活动同样被过滤。
+func LocalMachineIdentity(region Region) MachineIdentity {
+	if identity, okIdentity := readRuntimeInfoIdentity(region); okIdentity {
+		return identity
+	}
+	for _, path := range machineTokenPaths(region) {
+		if identity, okIdentity := readMachineTokenFile(path); okIdentity {
+			return identity
+		}
+	}
+	return MachineIdentity{}
+}
+
+// qoderClient 是本机 Qoder 客户端在该区域的目录特征。
+type qoderClient struct {
+	// dataDir 是 Unix 下的数据目录名（<home>/<dataDir>）。
+	dataDir string
+	// product 是 Windows 下 %APPDATA% 里的产品目录名。
+	product string
+}
+
+// clientFor 返回该区域对应的客户端目录特征。
+func clientFor(region Region) qoderClient {
+	if region == RegionCN {
+		return qoderClient{dataDir: ".qoder-cn", product: "Qoder CN"}
+	}
+	return qoderClient{dataDir: ".qoder", product: "Qoder"}
+}
+
+// runtimeInfoEnvironment 是 runtime-info 的第一个位置参数（官方 asar 口径）。
+func runtimeInfoEnvironment(region Region) string {
+	if region == RegionCN {
+		return "0"
+	}
+	return "3"
+}
+
+// runtimeInfoTimeout 限制单次 spawn（实测正常约 3.8 秒）。
+const runtimeInfoTimeout = 20 * time.Second
+
+// readRuntimeInfoIdentity 实时调用官方 runtime-info 生成身份。
+func readRuntimeInfoIdentity(region Region) (MachineIdentity, bool) {
+	executable, okExecutable := locateRuntimeInfo(region)
+	if !okExecutable {
+		return MachineIdentity{}, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), runtimeInfoTimeout)
+	defer cancel()
+
+	command := exec.CommandContext(ctx, executable, runtimeInfoEnvironment(region), "--account-stdin")
+	command.Stdin = strings.NewReader(`{"account":""}`)
+	output, errRun := command.Output()
+	if errRun != nil {
+		return MachineIdentity{}, false
+	}
+	return parseRuntimeInfoOutput(string(output))
+}
+
+// locateRuntimeInfo 定位本机 runtime-info 可执行文件。
+//
+// 路径形态：<home>/<dataDir>/.bin/umid-<hash>/runtime-info(.exe)。
+// 目录名带哈希（随版本变化），因此枚举而不是写死。
+func locateRuntimeInfo(region Region) (string, bool) {
+	if override := strings.TrimSpace(os.Getenv("QODER_RUNTIME_INFO")); override != "" {
+		if fileExists(override) {
+			return override, true
+		}
+		return "", false
+	}
+	home, errHome := os.UserHomeDir()
+	if errHome != nil {
+		return "", false
+	}
+	name := "runtime-info"
+	if runtime.GOOS == "windows" {
+		name = "runtime-info.exe"
+	}
+	binDir := filepath.Join(home, clientFor(region).dataDir, ".bin")
+	entries, errRead := os.ReadDir(binDir)
+	if errRead != nil {
+		return "", false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "umid-") {
+			continue
+		}
+		candidate := filepath.Join(binDir, entry.Name(), name)
+		if fileExists(candidate) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+// parseRuntimeInfoOutput 从 runtime-info 的 JSON 输出里取出身份。
+//
+// 输出可能带前缀日志，故从第一个 '{' 开始解析。
+func parseRuntimeInfoOutput(output string) (MachineIdentity, bool) {
+	start := strings.IndexByte(output, '{')
+	if start < 0 {
+		return MachineIdentity{}, false
+	}
+	var payload struct {
+		MachineToken string `json:"machineToken"`
+		MachineType  string `json:"machineType"`
+		MachineCode  string `json:"machineCode"`
+	}
+	if errUnmarshal := json.Unmarshal([]byte(output[start:]), &payload); errUnmarshal != nil {
+		return MachineIdentity{}, false
+	}
+	token := strings.TrimSpace(payload.MachineToken)
+	machineType := strings.TrimSpace(payload.MachineType)
+	if token == "" || machineType == "" {
+		return MachineIdentity{}, false
+	}
+	return MachineIdentity{Token: token, Type: machineType, Code: strings.TrimSpace(payload.MachineCode)}, true
+}
+
+// machineTokenPaths 返回该区域客户端磁盘缓存的候选路径（退路）。
+func machineTokenPaths(region Region) []string {
+	if override := strings.TrimSpace(os.Getenv("QODER_MACHINE_TOKEN_PATH")); override != "" {
+		return []string{override}
+	}
+	client := clientFor(region)
+	paths := make([]string, 0, 3)
+	if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
+		paths = append(paths, filepath.Join(appData, client.product, "SharedClientCache", "cache", "machine_token.json"))
+	}
+	home, errHome := os.UserHomeDir()
+	if errHome == nil {
+		paths = append(paths,
+			filepath.Join(home, "Library", "Application Support", client.product, "SharedClientCache", "cache", "machine_token.json"),
+			filepath.Join(home, ".config", client.product, "SharedClientCache", "cache", "machine_token.json"))
+	}
+	return paths
+}
+
+// readMachineTokenFile 读取客户端缓存的身份文件。
+func readMachineTokenFile(path string) (MachineIdentity, bool) {
+	raw, errRead := os.ReadFile(path)
+	if errRead != nil {
+		return MachineIdentity{}, false
+	}
+	var payload struct {
+		Token string `json:"token"`
+		Type  string `json:"type"`
+	}
+	if errUnmarshal := json.Unmarshal(raw, &payload); errUnmarshal != nil {
+		return MachineIdentity{}, false
+	}
+	token := strings.TrimSpace(payload.Token)
+	machineType := strings.TrimSpace(payload.Type)
+	if token == "" || machineType == "" {
+		return MachineIdentity{}, false
+	}
+	return MachineIdentity{Token: token, Type: machineType}, true
+}
+
+func fileExists(path string) bool {
+	info, errStat := os.Stat(path)
+	return errStat == nil && !info.IsDir()
 }

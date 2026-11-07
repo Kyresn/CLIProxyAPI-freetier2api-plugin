@@ -517,6 +517,9 @@ const (
 	billingMeterPathV2 = "/v2/billing/meter/get-user-resource"
 	dailyCheckinPath   = "/billing/meter/daily-checkin"
 	dailyCheckinPathV2 = "/v2/billing/meter/daily-checkin"
+	// checkinActivityStatusPath 是签到状态的权威来源（不是 checkin-status：
+	// 后者返回占位数据，会让人误判「活动未开启」）。
+	checkinActivityStatusPath = "/v2/billing/meter/checkin-activity-status"
 	// 企业用量接口：个人资源接口对企业账号返回空 Accounts，企业额度只能从这里取。
 	enterpriseUsagePath   = "/billing/meter/get-enterprise-user-usage"
 	enterpriseUsagePathV2 = "/v2/billing/meter/get-enterprise-user-usage"
@@ -798,13 +801,30 @@ func (c *Client) applyBillingHeaders(req *http.Request, cred *Credential) {
 	if enterpriseID := cred.EnterpriseIDValue(); enterpriseID != "" {
 		req.Header.Set("X-Enterprise-Id", enterpriseID)
 		req.Header.Set("X-Tenant-Id", enterpriseID)
+	} else {
+		// 个人账号也必须显式声明「无企业」，否则部分计费接口按缺失头处理。
+		req.Header.Set("X-No-Enterprise-Id", "1")
 	}
-	if domain := cred.DomainValue(); domain != "" {
-		req.Header.Set("X-Domain", domain)
+	// X-Domain 优先用凭据里记录的域名；缺失时回落到本次请求的目标域，
+	// 而不是留空——官方客户端的计费请求恒带该头。
+	domain := strings.TrimSpace(cred.DomainValue())
+	if domain == "" {
+		domain = endpointHost(GetEndpoints(cred.Realm()).ChatBase)
 	}
+	req.Header.Set("X-Domain", domain)
+	req.Header.Set("X-Product", "SaaS")
+	req.Header.Set("X-Product-Code", productCodeFor(cred.Realm()))
 	if token := c.DeviceToken(cred); token != "" {
 		req.Header.Set("X-Device-Token", token)
 	}
+}
+
+// productCodeFor 返回区域对应的产品码（官方客户端的 X-Product-Code）。
+func productCodeFor(region Region) string {
+	if region.IsGlobal() {
+		return "workbuddy"
+	}
+	return "codebuddy"
 }
 
 // applyMPHeaders 在计费头之上叠加小程序指纹头。

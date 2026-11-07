@@ -98,6 +98,11 @@ func LooksLikeCredential(raw map[string]any, fileName, provider string) bool {
 	if raw == nil {
 		return false
 	}
+	// 显式声明了 vendor 就说明它不是裸的 ZEN Key：本插件写出的 ZEN 凭证不带
+	// 这个字段，声明别人（含本插件其它供应商）的文件必须先被别家认领。
+	if strings.TrimSpace(core.GetString(raw, "vendor")) != "" {
+		return false
+	}
 	// 有 zen 专有字段名才认。api_key 单独出现也算——但必须排除别家的特征。
 	if hasZenSpecificField(raw) && !hasForeignMarker(raw) {
 		return true

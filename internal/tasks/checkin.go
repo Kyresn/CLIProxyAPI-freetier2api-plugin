@@ -156,5 +156,12 @@ func (s *Service) checkinHistoryLimit() int {
 	return state.DefaultCheckinHistoryLimit
 }
 
-// todayString 返回当前日期（本地时钟）。
-func (s *Service) todayString() string { return s.deps.Now().Format("2006-01-02") }
+// checkinZone 是上游每日签到重置使用的时区（固定 UTC+8）。
+//
+// 不能用宿主机本地时区：上游按北京时间零点重置，海外主机（UTC-7 等）在
+// 本地 10:00 触发时北京时间还是前一天，会把「上一轮已领」记成今天已签到，
+// 导致当天真正刷新后不再重试。
+var checkinZone = time.FixedZone("UTC+8", 8*60*60)
+
+// todayString 返回签到日键（UTC+8）。
+func (s *Service) todayString() string { return s.deps.Now().In(checkinZone).Format("2006-01-02") }

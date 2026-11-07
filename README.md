@@ -1,4 +1,4 @@
-# FreeTier 2API Plugin
+# FreeTier 2API Plugin (Kyresn 独立维护版)
 
 [![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-Plugin-2496ED?style=flat)](https://github.com/router-for-me/CLIProxyAPI)
@@ -9,6 +9,8 @@
 中文 | [English](README_EN.md)
 
 如果这个项目帮到了你，欢迎点个 Star 支持一下。
+
+> **维护归属说明**：本仓库是 `Kyresn/CLIProxyAPI-freetier2api-plugin` 的独立维护版本，插件 ID、安装名称与 CLIProxyAPI 插件市场名称保持 `freetier2api` / `FreeTier 2API` 不变。项目基于原作者 `jiandanc/CLIProxyAPI-freetier2api-plugin` 的开源工作继续维护；原作者与上游项目版权及贡献归属保持不变。
 
 > **⚠️ 重要合规提示**：本项目**仅限个人学习与技术研究使用**，严禁用于任何商业售卖、API 转售、代充代刷、公开/收费共享池或任何违反各上游平台服务条款与法律法规的用途。单个供应商硬性限制最多添加 **10 个**账号。继续使用即表示您已阅读并同意文末[免责声明](#免责声明)。
 
@@ -34,12 +36,15 @@
 | `raccoon` | 小浣熊 | — | API Key | `raccoon-*.json` |
 | `opencodezen` | OpenCode ZEN | `global` | API Key | `opencodezen-*.json` |
 | `cline` | Cline | `global` | WorkOS 设备授权 | `cline-*.json` |
-| `zcode` | ZCode | `global` | OAuth CLI 授权 | `zcode-*.json` |
+| `zcodecn` | ZCode 国内版 | `cn` | OAuth CLI 授权（智谱开放平台 bigmodel） | `zcodecn-*.json` |
+| `zcodeglobal` | ZCode 国际版 | `global` | OAuth CLI 授权（z.ai） | `zcodeglobal-*.json` |
 | `traecn` | Trae 国内版 | `cn` | OAuth 授权 | `traecn-*.json` |
 | `traeglobal` | Trae 国际版 | `global` | OAuth 授权 | `traeglobal-*.json` |
 | `codearts` | CodeArts | `cn` | OAuth 授权 | `codearts-*.json` |
 | `minimaxcodecn` | MiniMax Code 国内版 | `cn` | OAuth 设备授权 | `minimaxcodecn-*.json` |
 | `minimaxcodeglobal` | MiniMax Code 国际版 | `global` | OAuth 设备授权 | `minimaxcodeglobal-*.json` |
+
+> 旧 ZCode 凭证 `zcode-*.json` 仍可加载：按 `region` 归属，缺 `region` 默认国际版，文件名保持不变；`disabled_models` 与模型别名里已有的 `zcode:<模型>` 也继续映射到 `zcodeglobal`（拆分前只有国际版）。
 
 ## 快速开始
 
@@ -136,11 +141,11 @@ curl http://localhost:8317/v1/messages \
 | --- | --- | --- | --- |
 | `enabled_realms` | string | `cn,global` | 启用的区域（`cn` / `global`） |
 | `auto_checkin` | bool | `true` | 每日自动签到开关 |
-| `auto_checkin_at` | string | `10:00` | 每日自动签到执行时间（`HH:MM`） |
+| `auto_checkin_at` | string | `10:00` | 每日自动签到时间（`HH:MM`，本地时区）。排程粒度为整点，分钟不为 0 时顺延到下一整点，保证不会早于设定时刻执行 |
 | `auto_tasks` | bool | `true` | 每日自动任务开关 |
 | `checkin_history_limit` | int | `30` | 每个账号保留的签到历史条数（`<=0` 用默认值 30；控制台签到列可展开查看） |
 | `prompt_mode` | string | `passthrough` | 提示词防御模式：`passthrough`（透传）/ `custom`（替换）/ `append`（追加） |
-| `model_name_tag` | string | `off` | 模型名渠道标识：`off`（默认）/ `prefix` / `suffix`。开启后各供应商的模型对外 ID 自动带渠道前缀或后缀（如 `zcode-GLM-5.3`），同名模型可按渠道定点选择；标识按供应商统一生成、不区分账号。改动后需宿主重建模型注册表生效（重启或等凭据重载，控制台会提示「待生效」） |
+| `model_name_tag` | string | `off` | 模型名渠道标识：`off`（默认）/ `prefix` / `suffix`。开启后各供应商的模型对外 ID 自动带渠道前缀或后缀（如 `zcodeglobal-GLM-5.3`），同名模型可按渠道定点选择；标识按供应商统一生成、不区分账号。改动后需宿主重建模型注册表生效（重启或等凭据重载，控制台会提示「待生效」） |
 | `disabled_models` | string / list | 空 | 禁用模型列表（支持 `vendor:model` 或裸名，与控制台勾选合并） |
 | `extra_models` | string | 空 | 额外补充注册的模型名（逗号分隔） |
 | `state_dir` | string | `~/.freetier2api-plugin` | 状态与缓存目录（若存在 `~/.cli-proxy-api` 则默认使用其下 `freetier2api` 子目录） |

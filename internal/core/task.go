@@ -1,6 +1,9 @@
 package core
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 type TaskSpec struct {
 	Kind         string `json:"kind"`
@@ -16,6 +19,25 @@ type TaskSpec struct {
 // TaskCatalogProvider 由需要注册任务族/排程的供应商实现。
 type TaskCatalogProvider interface {
 	TaskSpecs() []TaskSpec
+}
+
+// SupportsScheduledKind 报告供应商是否声明了某个定时任务族。
+//
+// 排程（state.json 的 task_schedules）是全局的，不区分供应商与账号；调度器在
+// 执行前必须按各家声明的 TaskSpecs 过滤：未声明的族对它没有实现，跳过即可，
+// 不能落 ERROR——那会把「这个功能不属于你」误报成故障（issue #58）。
+func SupportsScheduledKind(vendor Vendor, kind string) bool {
+	catalog, okCatalog := As[TaskCatalogProvider](vendor)
+	if !okCatalog {
+		return false
+	}
+	kind = strings.TrimSpace(kind)
+	for _, spec := range catalog.TaskSpecs() {
+		if spec.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // 任务调度的中立类型与接口。

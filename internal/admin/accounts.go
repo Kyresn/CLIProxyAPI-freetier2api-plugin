@@ -369,8 +369,22 @@ func (s *Service) deleteAuthFile(ctx context.Context, callbackID string, entry c
 	if errRemove := os.Remove(targetPath); errRemove != nil {
 		return fmt.Errorf("删除文件失败：%w", errRemove)
 	}
-	logger.Info("deleted auth file %s (vendor=%s)", filepath.Base(targetPath), entry.Name)
+	logger.Info("deleted auth file %s (vendor=%s)", filepath.Base(targetPath),
+		credentialVendorLabel(s.registry, raw, filepath.Base(targetPath)))
 	return nil
+}
+
+// credentialVendorLabel 反查凭证真正的供应商标识，供日志使用。
+//
+// 宿主的 auth 记录只有 provider（=本插件）与文件名，Name 常常就是文件名本身；
+// 直接把它当 vendor 写日志会出现 vendor=codearts-codearts-user.json 这种误导
+// （issue #58）。查不到归属时写 unknown，不拿文件名冒充。
+func credentialVendorLabel(registry *core.Registry, raw []byte, fileName string) string {
+	credential, okCredential := registry.ParseCredential(raw, fileName, nil)
+	if !okCredential {
+		return "unknown"
+	}
+	return core.FirstNonEmpty(credential.VendorIDValue(), "unknown")
 }
 
 // setAuthDisabled 在凭证文件上写/清 disabled 标记。
@@ -394,7 +408,8 @@ func (s *Service) setAuthDisabled(ctx context.Context, callbackID string, entry 
 	if errSave := saveAuthFile(callbackID, filepath.Base(targetPath), updated); errSave != nil {
 		return errSave
 	}
-	logger.Info("auth file %s disabled=%t (vendor=%s)", filepath.Base(targetPath), disabled, entry.Name)
+	logger.Info("auth file %s disabled=%t (vendor=%s)", filepath.Base(targetPath), disabled,
+		credentialVendorLabel(s.registry, raw, filepath.Base(targetPath)))
 	return nil
 }
 
@@ -609,7 +624,11 @@ func (s *Service) runForAccounts(
 			VendorID: current.Vendor.ID(),
 			Realm:    current.Credential.RegionValue(),
 		}
-		outcome, errAction := action(ctx, current.Vendor, current.Credential)
+		outcome, errAction := runWithAuthRetry(current.Credential, func() *core.Credential {
+			return s.refreshedCredential(ctx, callbackID, current.Entry, current.Vendor)
+		}, func(credential *core.Credential) (accountActionOutcome, error) {
+			return action(ctx, current.Vendor, credential)
+		})
 		if errAction != nil {
 			result.OK = false
 			result.Message = errAction.Error()
@@ -621,4 +640,18 @@ func (s *Service) runForAccounts(
 		return result
 	})
 	return append(results, jobResults...)
+}
+
+// runWithAuthRetry 在动作因凭证过期（401）失败时，刷新一次凭证再重试。
+//
+// CodeArts 的 STS security token 过期是**可续期**的：不刷新就重试，一键签到
+// 会一直报「token has expired」，用户只能自己去点 Token 续期。只认 401——
+// 403 / 参数错误刷新不会变好。刷新与重试逻辑见 withAuthRetry。
+func runWithAuthRetry(
+	credential *core.Credential,
+	refresh func() *core.Credential,
+	action func(*core.Credential) (accountActionOutcome, error),
+) (accountActionOutcome, error) {
+	outcome, _, errAction := withAuthRetry(credential, refresh, action)
+	return outcome, errAction
 }

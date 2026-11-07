@@ -33,10 +33,12 @@ func TestRegisterReturnsFullContract(t *testing.T) {
 		t.Fatalf("all five capabilities must be declared: %+v", capabilities)
 	}
 	// model.for_auth 只在 executor_model_scope 含 oauth/both 时才被宿主调用；
-	// 声明错会让 realm 隔离静默失效。
-	if capabilities.ExecutorModelScope != string(pluginapi.ExecutorModelScopeBoth) {
-		t.Fatalf("executor_model_scope = %q, want %q (model.for_auth depends on it)",
-			capabilities.ExecutorModelScope, pluginapi.ExecutorModelScopeBoth)
+	// 声明错会让 realm 隔离静默失效。反过来，声明 both 会让宿主把 static 目录
+	// 另外注册成一个 model-registry 客户端，与按凭证注册的客户端重复计数——
+	// 删除凭证后模型停在 refcount 1（issue #58 的幽灵模型）。
+	if capabilities.ExecutorModelScope != string(pluginapi.ExecutorModelScopeOAuth) {
+		t.Fatalf("executor_model_scope = %q, want %q (models are auth-bound only)",
+			capabilities.ExecutorModelScope, pluginapi.ExecutorModelScopeOAuth)
 	}
 	// 只声明 chat-completions：多协议由宿主翻译。
 	if len(capabilities.ExecutorInputFormats) != 1 || capabilities.ExecutorInputFormats[0] != app.FormatChatCompletions {

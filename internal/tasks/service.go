@@ -21,6 +21,9 @@ type Service struct {
 	taskLockMu sync.Mutex
 	taskLocks  map[string]*sync.Mutex
 	queue      *queueState
+
+	// refreshGate 按账号串行化凭证续期（见 keepalive.go）。
+	refreshGate refreshGate
 }
 
 // New 构造任务引擎。
