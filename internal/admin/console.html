@@ -1479,11 +1479,12 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     if (!account.supports_claim) return null;
     var claim = account.claim || {};
     if (claim.error) return { text: "套餐领取", disabled: false, title: claim.error };
-    // 未检测过（初次加载）或有待领套餐
-    if (!claim.checked_at || claim.claimable > 0) {
+    // 未检测过、没有投放结果、或有待领套餐时保持可点。
+    // available=0 表示没有投放证据，不能证明用户已领取全部套餐。
+    if (!claim.checked_at || claim.available === 0 || claim.claimable > 0) {
       return { text: "套餐领取", disabled: false, title: claim.claimable ? (claim.claimable + " 个套餐可领") : "点击查询可领套餐" };
     }
-    // 已全部领取
+    // 只有已确认存在投放，且所有投放都已持有，才能显示「已领取」。
     return { text: "已领取", disabled: true, title: "已领取当前全部套餐" };
   }
 
