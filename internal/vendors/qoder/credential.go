@@ -167,6 +167,18 @@ func firstTokenIn(payload map[string]any) string {
 // **刻意不用 dt- 前缀**：WorkBuddy 的凭证也有 device_token 字段且同样用
 // dt- 前缀（实测两家的设备令牌前缀相同），拿它当判据必然跨供应商误吞。
 func LooksLikeCredential(raw map[string]any, fileName, provider string) bool {
+	// provider 与凭证 type 都是宿主归属声明；任一明确指向其它 provider
+	// 都必须拒绝。否则 secret 中的任意字符串可能把别家凭证误认成 Qoder。
+	if declaredProvider := strings.TrimSpace(provider); declaredProvider != "" &&
+		!strings.EqualFold(declaredProvider, core.ProviderKey) {
+		return false
+	}
+	if declaredType, okType := raw["type"].(string); okType {
+		declaredType = strings.TrimSpace(declaredType)
+		if declaredType != "" && !strings.EqualFold(declaredType, core.ProviderKey) {
+			return false
+		}
+	}
 	if hasQoderTokenPrefix(raw) {
 		return true
 	}

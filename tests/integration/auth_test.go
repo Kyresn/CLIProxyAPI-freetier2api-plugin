@@ -89,6 +89,9 @@ func TestAuthParseVendorOwnershipDiscrimination(t *testing.T) {
 		// 既有供应商：仍按各自约定认领。
 		{"workbuddy nested", "workbuddycn-u1.json", "", `{"account":{"uid":"u1"},"auth":{"accessToken":"at","realm":"cn"}}`, true},
 		{"qoder pt token", "qodercn-u1.json", "", `{"token":"pt-abc"}`, true},
+		// Qoder 的 secret 可能是任意原始令牌；宿主已声明其它 provider 时必须拒绝。
+		{"qoder secret with foreign provider", "account.json", "qoder", `{"secret":"dt-foreign-provider-token"}`, false},
+		{"qoder secret with foreign type", "account.json", "", `{"type":"qoder","secret":"dt-foreign-provider-token"}`, false},
 		// 新增供应商：ZCode, Trae 国内版/国际版, CodeArts, MiniMax Code
 		{"zcode filename", "zcode-key1.json", "", `{"api_key":"abc.123"}`, true},
 		{"traecn filename", "traecn-user1.json", "", `{"accessToken":"at_123"}`, true},

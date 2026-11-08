@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"freetier2api-plugin/internal/core"
 )
 
 // disableLocalMachineIdentity 让本机自动解析确定性地「拿不到身份」。
@@ -235,5 +237,44 @@ func TestCheckinHeadersSendProvidedMachineIdentity(t *testing.T) {
 	}
 	if headers["cosy-machinecode"] != "cd" {
 		t.Errorf("cosy-machinecode = %q", headers["cosy-machinecode"])
+	}
+}
+
+// TestLooksLikeCredentialRejectsConflictingProvider 锁住宿主 provider 身份校验。
+//
+// secret 字段可能承载任意供应商的原始令牌；它只有在宿主未声明其它 provider
+// 时才可作为 Qoder 归属证据。否则 auth.parse 会误认领别家凭证，后续额度路径
+// 可能把别家令牌放进 Qoder 的 Bearer 请求。
+func TestLooksLikeCredentialRejectsConflictingProvider(t *testing.T) {
+	cases := []struct {
+		name     string
+		raw      map[string]any
+		provider string
+		want     bool
+	}{
+		{
+			name:     "foreign host provider",
+			raw:      map[string]any{"secret": "dt-foreign-provider-token"},
+			provider: "qoder",
+			want:     false,
+		},
+		{
+			name: "foreign type field",
+			raw:  map[string]any{"type": "qoder", "secret": "dt-foreign-provider-token"},
+			want: false,
+		},
+		{
+			name:     "plugin provider accepted",
+			raw:      map[string]any{"type": core.ProviderKey, "secret": "dt-qoder-token"},
+			provider: core.ProviderKey,
+			want:     true,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := LooksLikeCredential(testCase.raw, "account.json", testCase.provider); got != testCase.want {
+				t.Fatalf("LooksLikeCredential = %v, want %v", got, testCase.want)
+			}
+		})
 	}
 }
