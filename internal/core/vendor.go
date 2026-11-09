@@ -84,6 +84,12 @@ type Vendor interface {
 	ExecuteStream(ctx context.Context, cred *Credential, req *ExecuteRequest, sink StreamSink) error
 }
 
+// CredentialOwnershipValidator checks host provider identity before registry
+// shortcuts can bypass Vendor.Match.
+type CredentialOwnershipValidator interface {
+	ValidateCredentialOwnership(provider string, raw map[string]any) bool
+}
+
 // ExecuteRequest 是一次对话执行的输入。
 type ExecuteRequest struct {
 	// Model 是剥掉供应商前缀后的裸模型名。

@@ -92,6 +92,11 @@ func TestAuthParseVendorOwnershipDiscrimination(t *testing.T) {
 		// Qoder 的 secret 可能是任意原始令牌；宿主已声明其它 provider 时必须拒绝。
 		{"qoder secret with foreign provider", "account.json", "qoder", `{"secret":"dt-foreign-provider-token"}`, false},
 		{"qoder secret with foreign type", "account.json", "", `{"type":"qoder","secret":"dt-foreign-provider-token"}`, false},
+		{"qoder filename must reject foreign provider", "qoderglobal-foreign.json", "foreign-provider", `{"type":"foreign-provider","oauth_provider":"freetier","secret":"dt-synthetic-only"}`, false},
+		{"qoder filename rejects foreign type alone", "qoderglobal-foreign.json", app.ProviderKey, `{"type":"foreign-provider","oauth_provider":"freetier","secret":"dt-synthetic-only"}`, false},
+		{"qoder vendor must reject foreign provider", "account.json", "foreign-provider", `{"type":"freetier","oauth_provider":"freetier","vendor":"qoderglobal","secret":"dt-synthetic-only"}`, false},
+		{"qoder vendor rejects foreign type alone", "account.json", app.ProviderKey, `{"type":"foreign-provider","oauth_provider":"freetier","vendor":"qoderglobal","secret":"dt-synthetic-only"}`, false},
+		{"qoder filename and vendor reject both conflicts", "qoderglobal-foreign.json", "foreign-provider", `{"type":"foreign-provider","oauth_provider":"freetier","vendor":"qoderglobal","secret":"dt-synthetic-only"}`, false},
 		// 新增供应商：ZCode, Trae 国内版/国际版, CodeArts, MiniMax Code
 		{"zcode filename", "zcode-key1.json", "", `{"api_key":"abc.123"}`, true},
 		{"traecn filename", "traecn-user1.json", "", `{"accessToken":"at_123"}`, true},
@@ -131,6 +136,26 @@ func TestAuthParseVendorOwnershipDiscrimination(t *testing.T) {
 				t.Fatalf("handled = %v, want %v", response.Handled, tc.wantHandle)
 			}
 		})
+	}
+}
+
+// TestQuotaFetchDoesNotSendConflictingQoderCredential verifies forged quota
+// input cannot bypass auth.parse ownership checks or reach the Qoder HTTP callback.
+func TestQuotaFetchDoesNotSendConflictingQoderCredential(t *testing.T) {
+	host := installFakeHost(t)
+	setupTestPlugin(t)
+
+	payload := `{"type":"foreign-provider","oauth_provider":"freetier","vendor":"qoderglobal","secret":"dt-synthetic-only"}`
+	_, errHandle := testApp.HandleMethod(pluginabi.MethodQuotaFetch, mustMarshal(pluginapi.QuotaFetchRequest{
+		AuthID:      "foreign-account",
+		StorageJSON: []byte(payload),
+		Attributes:  map[string]string{core.VendorKey: "qoderglobal", "realm": "global"},
+	}))
+	if errHandle == nil || !strings.Contains(errHandle.Error(), "credential is not available") {
+		t.Fatalf("quota.fetch error = %v, want rejected credential", errHandle)
+	}
+	if got := host.UpstreamCalls(); got != 0 {
+		t.Fatalf("quota.fetch issued %d upstream calls for conflicting provider credential", got)
 	}
 }
 

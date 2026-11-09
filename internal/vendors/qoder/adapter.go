@@ -123,6 +123,11 @@ func (v *adapter) Configure(_ core.Settings, raw map[string]string) {
 	v.settings.Store(snapshot)
 }
 
+// ValidateCredentialOwnership checks provider declarations before Registry shortcuts.
+func (v *adapter) ValidateCredentialOwnership(provider string, raw map[string]any) bool {
+	return validateCredentialOwnership(provider, raw)
+}
+
 // Match 判断一份凭证是否属于本区域。
 func (v *adapter) Match(fileName, provider string, raw map[string]any) bool {
 	if !LooksLikeCredential(raw, fileName, provider) {

@@ -105,10 +105,10 @@ func (r *Registry) Resolve(fileName, provider string, raw map[string]any) (Vendo
 	if raw != nil {
 		if rawVendor, okVendor := raw[VendorKey].(string); okVendor {
 			if v, ok := r.ByID(rawVendor); ok {
-				return v, true
+				return validatedVendor(v, provider, raw)
 			}
 			if v, ok := r.resolveFamily(rawVendor, fileName, provider, raw); ok {
-				return v, true
+				return validatedVendor(v, provider, raw)
 			}
 		}
 	}
@@ -126,7 +126,7 @@ func (r *Registry) Resolve(fileName, provider string, raw map[string]any) (Vendo
 		sortByLengthDesc(ids)
 		for _, id := range ids {
 			if FileNameMatchesConvention(base, id) {
-				return r.byID[id], true
+				return validatedVendor(r.byID[id], provider, raw)
 			}
 		}
 		// 旧 ID 的文件名（zcode-*.json）仍要归到它演变成的实例：这类文件只
@@ -138,17 +138,25 @@ func (r *Registry) Resolve(fileName, provider string, raw map[string]any) (Vendo
 				continue
 			}
 			if v, ok := r.resolveFamily(legacyID, fileName, provider, raw); ok {
-				return v, true
+				return validatedVendor(v, provider, raw)
 			}
 		}
 	}
 
 	for _, v := range r.Vendors() {
 		if v.Match(fileName, provider, raw) {
-			return v, true
+			return validatedVendor(v, provider, raw)
 		}
 	}
 	return nil, false
+}
+
+func validatedVendor(v Vendor, provider string, raw map[string]any) (Vendor, bool) {
+	if validator, ok := v.(CredentialOwnershipValidator); ok &&
+		!validator.ValidateCredentialOwnership(provider, raw) {
+		return nil, false
+	}
+	return v, true
 }
 
 // resolveFamily 把家族标识（拆分前的旧 ID、cn / global 区域别名）落到实例。
@@ -160,12 +168,12 @@ func (r *Registry) resolveFamily(family, fileName, provider string, raw map[stri
 	ids := r.VendorIDsForPrefix(family)
 	for _, id := range ids {
 		if v, ok := r.ByID(id); ok && v.Match(fileName, provider, raw) {
-			return v, true
+			return validatedVendor(v, provider, raw)
 		}
 	}
 	for _, id := range ids {
 		if v, ok := r.ByID(id); ok {
-			return v, true
+			return validatedVendor(v, provider, raw)
 		}
 	}
 	return nil, false
