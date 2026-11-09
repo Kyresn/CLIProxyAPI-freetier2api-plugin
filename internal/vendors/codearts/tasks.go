@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -226,7 +227,15 @@ func signedSnapJSON(ctx context.Context, method, url string, cred *Credential, b
 
 	resp, errDo := hostbridge.Client(ctx, 20*time.Second).Do(req)
 	if errDo != nil {
-		return nil, fmt.Errorf("snap request failed: %w", errDo)
+		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
+			return nil, errDo
+		}
+		return nil, &core.Failure{
+			Kind:   core.FailureKindTransient,
+			Status: http.StatusBadGateway,
+			Code:   "codearts_snap_transport",
+			Msg:    "snap request failed: " + errDo.Error(),
+		}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -235,7 +244,7 @@ func signedSnapJSON(ctx context.Context, method, url string, cred *Credential, b
 		return nil, fmt.Errorf("read snap response: %w", errRead)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("snap response %d: %s", resp.StatusCode, describeSnapError(raw))
+		return nil, Classify(resp.StatusCode, string(raw))
 	}
 	var envelope map[string]any
 	if errDecode := json.Unmarshal(raw, &envelope); errDecode != nil {

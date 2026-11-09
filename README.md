@@ -141,7 +141,7 @@ curl http://localhost:8317/v1/messages \
 | --- | --- | --- | --- |
 | `enabled_realms` | string | `cn,global` | 启用的区域（`cn` / `global`） |
 | `auto_checkin` | bool | `true` | 每日自动签到开关 |
-| `auto_checkin_at` | string | `10:00` | 每日自动签到时间（`HH:MM`，本地时区）。排程粒度为整点，分钟不为 0 时顺延到下一整点，保证不会早于设定时刻执行 |
+| `auto_checkin_at` | string | `10:00` | 每日自动签到时间（`HH:MM`，本地时区）。调度器在配置小时唤醒，并在该小时内等待到配置分钟；默认排程保留 9/21 点作为重试时刻 |
 | `auto_tasks` | bool | `true` | 每日自动任务开关 |
 | `checkin_history_limit` | int | `30` | 每个账号保留的签到历史条数（`<=0` 用默认值 30；控制台签到列可展开查看） |
 | `prompt_mode` | string | `passthrough` | 提示词防御模式：`passthrough`（透传）/ `custom`（替换）/ `append`（追加） |

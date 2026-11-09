@@ -1,9 +1,16 @@
 package codearts
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
+
+	"freetier2api-plugin/cpasdk/pluginabi"
+	"freetier2api-plugin/internal/core"
+	"freetier2api-plugin/internal/hostbridge"
 )
 
 // TestIdentifierAcceptsNumberAndString 锁住 campaignId 的数字/字符串两种形态。
@@ -117,5 +124,53 @@ func TestDescribeSnapErrorKeepsGatewayReason(t *testing.T) {
 	got := describeSnapError([]byte(`{"error_code":"APIG.0301","error_msg":"verify ak sk signature fail"}`))
 	if !strings.Contains(got, "APIG.0301") || !strings.Contains(got, "signature fail") {
 		t.Fatalf("describeSnapError = %q", got)
+	}
+}
+
+// TestSignedSnapJSONClassifiesExpiredSecurityToken ensures a Snap HTTP 400
+// carries credential semantics, so quota/check-in callers refresh STS material.
+func TestSignedSnapJSONClassifiesExpiredSecurityToken(t *testing.T) {
+	hostbridge.Configure(func(_ string, method string, _ any) (json.RawMessage, error) {
+		if method != pluginabi.MethodHostHTTPDo {
+			return nil, errors.New("unexpected host method: " + method)
+		}
+		return json.Marshal(map[string]any{
+			"StatusCode": http.StatusBadRequest,
+			"Headers":    map[string][]string{"Content-Type": {"application/json"}},
+			"Body":       []byte(`{"error_code":"APIG.0602","error_msg":"the security token has expired"}`),
+		})
+	})
+	t.Cleanup(func() { hostbridge.Configure(nil) })
+
+	_, errFetch := signedSnapJSON(context.Background(), http.MethodGet, SnapEngineApiHost+EpOpsDelivery,
+		&Credential{AccessKeyID: "ak", SecretAccessKey: "sk", SecurityToken: "st"}, nil)
+	var failure *core.Failure
+	if !errors.As(errFetch, &failure) {
+		t.Fatalf("error = %v, want core.Failure", errFetch)
+	}
+	if failure.Kind != core.FailureKindCredential || failure.HTTPStatus() != http.StatusUnauthorized {
+		t.Fatalf("failure = %+v, want credential/401", failure)
+	}
+}
+
+// TestSignedSnapJSONClassifiesTransportFailure ensures transient host transport
+// errors remain retryable rather than being reported as permanent client errors.
+func TestSignedSnapJSONClassifiesTransportFailure(t *testing.T) {
+	hostbridge.Configure(func(_ string, method string, _ any) (json.RawMessage, error) {
+		if method != pluginabi.MethodHostHTTPDo {
+			return nil, errors.New("unexpected host method: " + method)
+		}
+		return nil, errors.New("synthetic EOF")
+	})
+	t.Cleanup(func() { hostbridge.Configure(nil) })
+
+	_, errFetch := signedSnapJSON(context.Background(), http.MethodGet, SnapEngineApiHost+EpOpsDelivery,
+		&Credential{AccessKeyID: "ak", SecretAccessKey: "sk", SecurityToken: "st"}, nil)
+	var failure *core.Failure
+	if !errors.As(errFetch, &failure) {
+		t.Fatalf("error = %v, want core.Failure", errFetch)
+	}
+	if failure.Kind != core.FailureKindTransient || failure.HTTPStatus() != http.StatusBadGateway {
+		t.Fatalf("failure = %+v, want transient/502", failure)
 	}
 }

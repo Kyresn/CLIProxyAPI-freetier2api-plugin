@@ -14,19 +14,18 @@ func TestNormalizeHoursKeepsValidValues(t *testing.T) {
 	}
 }
 
-// TestParseClockHourRoundsUp 锁住 auto_checkin_at 的分钟不会被静默丢弃。
-//
-// 排程粒度是整点，10:35 必须落到 11:00：签到窗口常常 10:30 才开，
-// 按 10:00 执行等于每天都跑空。23:xx 取整后落到次日 00:00，仍不早于设定时刻。
-func TestParseClockHourRoundsUp(t *testing.T) {
+// TestParseClockHourUsesConfiguredHour locks the wake hour for minute-specific
+// auto_checkin_at. checkinMinuteDelay waits within this hour, preventing an
+// early checkin without moving the wake to the next hour.
+func TestParseClockHourUsesConfiguredHour(t *testing.T) {
 	cases := []struct {
 		value string
 		hour  int
 		ok    bool
 	}{
 		{"10:00", 10, true},
-		{" 09:07 ", 10, true},
-		{"23:30", 0, true},
+		{" 09:07 ", 9, true},
+		{"23:30", 23, true},
 		{"24:00", 0, false},
 		{"10:60", 0, false},
 		{"10", 0, false},

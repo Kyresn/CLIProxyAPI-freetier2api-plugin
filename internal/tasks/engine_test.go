@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"testing"
+	"time"
 
 	"freetier2api-plugin/internal/core"
 )
@@ -113,13 +114,45 @@ func TestParseClockKeepsMinutes(t *testing.T) {
 	if !ok || hour != 10 || minute != 5 {
 		t.Fatalf("parseClock = %d:%d/%v, want 10:5/true", hour, minute, ok)
 	}
-	if _, ok := parseClockHour("10:05"); !ok {
-		t.Fatal("parseClockHour 应接受合法时间")
+	if got, ok := parseClockHour("10:05"); !ok || got != 10 {
+		t.Fatalf("parseClockHour = %d/%v, want 10/true", got, ok)
 	}
 	if _, _, ok := parseClock("25:00"); ok {
 		t.Fatal("非法小时应拒绝")
 	}
 	if _, _, ok := parseClock("10:60"); ok {
 		t.Fatal("非法分钟应拒绝")
+	}
+}
+
+// TestAutoCheckinMinuteUsesConfiguredHour locks the scheduler wake for a
+// minute-specific auto_checkin_at. The batch must wake at 10:00 and wait until
+// 10:05, not wake at 11:00 after clock-hour rounding.
+func TestAutoCheckinMinuteUsesConfiguredHour(t *testing.T) {
+	deps := newFakeDeps(time.Date(2026, 11, 9, 9, 59, 0, 0, time.UTC))
+	deps.cfg.AutoCheckin = true
+	deps.cfg.AutoCheckinAt = "10:05"
+	service := &Service{deps: deps, catalog: NewCatalog(core.NewRegistry())}
+
+	schedule := service.effectiveSchedule()
+	hours := schedule[core.TaskKindCheckin]
+	if len(hours) == 0 || hours[0] != 10 {
+		t.Fatalf("checkin schedule = %v, want configured hour 10 first", hours)
+	}
+	kinds, next := service.nextScheduledWake(deps.now)
+	if next.Hour() != 10 || next.Minute() != 0 {
+		t.Fatalf("next wake = %s, want 10:00", next.Format(time.RFC3339))
+	}
+	found := false
+	for _, kind := range kinds {
+		if kind == core.TaskKindCheckin {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("next kinds = %v, want checkin", kinds)
+	}
+	if got := service.checkinMinuteDelay(time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC)); got != 5*time.Minute {
+		t.Fatalf("checkin minute delay = %s, want 5m", got)
 	}
 }

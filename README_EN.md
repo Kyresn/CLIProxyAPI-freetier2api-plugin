@@ -141,7 +141,7 @@ Configure under `plugins.configs.freetier2api-fork` in `config.yaml` (runtime se
 | --- | --- | --- | --- |
 | `enabled_realms` | string | `cn,global` | Enabled regions (`cn` / `global`) |
 | `auto_checkin` | bool | `true` | Enable automated daily check-in |
-| `auto_checkin_at` | string | `10:00` | Daily check-in time (`HH:MM`, local time). Scheduling is hourly, so any minute above 0 rounds up to the next hour and the run never fires before the configured time |
+| `auto_checkin_at` | string | `10:00` | Daily check-in time (`HH:MM`, local time). The scheduler wakes in the configured hour and waits until the configured minute; default 09:00/21:00 slots remain as retry times |
 | `auto_tasks` | bool | `true` | Enable automated daily tasks |
 | `checkin_history_limit` | int | `30` | Check-in records kept per account (`<=0` falls back to 30; expandable in the console) |
 | `prompt_mode` | string | `passthrough` | System prompt filter mode: `passthrough` / `custom` / `append` |

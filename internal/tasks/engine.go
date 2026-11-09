@@ -161,18 +161,13 @@ func (s *Service) checkinAt() string {
 	return strings.TrimSpace(s.deps.Config().AutoCheckinAt)
 }
 
-// parseClockHour 把 HH:MM 转成排程用的整点小时。
+// parseClockHour 把 HH:MM 转成排程的唤醒小时。
 //
-// 分钟部分向上取整，确保 10:35 不会在 10:00 提前执行。
+// 分钟部分由 checkinMinuteDelay 在同一小时内等待；向上取整会让 10:05
+// 的唤醒落在 11:00，之后无法补回目标分钟。
 func parseClockHour(value string) (int, bool) {
-	hour, minute, okClock := parseClock(value)
-	if !okClock {
-		return 0, false
-	}
-	if minute > 0 {
-		hour = (hour + 1) % 24
-	}
-	return hour, true
+	hour, _, okClock := parseClock(value)
+	return hour, okClock
 }
 
 // parseClock 解析 HH:MM，返回小时与分钟。
