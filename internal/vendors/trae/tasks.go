@@ -378,7 +378,10 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 		if pack.EntitlementBaseInfo.ProductType != productTypeCredits {
 			continue
 		}
-		limit := core.FloatFromAny(pack.EntitlementBaseInfo.Quota.CreditsLimit)
+		limit, okLimit := core.FloatFromAny(pack.EntitlementBaseInfo.Quota.CreditsLimit)
+		if !okLimit {
+			continue
+		}
 		// credits_limit=-1 是「无限额度」包，不能按 0 或负数跳过——那会让
 		// 无限账号显示剩余 0（auth.Totals 认 -1 / unit=unlimited）。
 		if limit < 0 {
@@ -386,7 +389,7 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 			continue
 		}
 		total += limit
-		if amount := core.FloatFromAny(pack.Usage.CreditsAmount); amount > 0 {
+		if amount, okAmount := core.FloatFromAny(pack.Usage.CreditsAmount); okAmount && amount > 0 {
 			used += amount
 		}
 	}

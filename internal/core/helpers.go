@@ -352,37 +352,6 @@ func ParseClock(raw string) (hour, minute int, ok bool) {
 	return hour, minute, true
 }
 
-// FloatFromAny 宽容解析数字：接受 JSON 数字、json.Number 与数字字符串。
-//
-// 上游同一个字段在不同接口 / 不同版本上可能下发 12 / "12" / null，严格解码会
-// 让整条响应解析失败，把一次成功签到报成 decode 错误。无法解析返回 0。
-func FloatFromAny(value any) float64 {
-	switch number := value.(type) {
-	case float64:
-		return number
-	case float32:
-		return float64(number)
-	case int:
-		return float64(number)
-	case int64:
-		return float64(number)
-	case json.Number:
-		if parsed, errParse := number.Float64(); errParse == nil {
-			return parsed
-		}
-	case string:
-		if parsed, errParse := strconv.ParseFloat(strings.TrimSpace(number), 64); errParse == nil {
-			return parsed
-		}
-	}
-	return 0
-}
-
-// IntFromAny 把 JSON 数值转成 int（缺失或非法返回 0，小数截断）。
-func IntFromAny(value any) int {
-	return int(FloatFromAny(value))
-}
-
 // StringField 读取 map 中的字符串字段（去空白）。
 func StringField(m map[string]any, key string) string {
 	if m == nil {
@@ -432,4 +401,47 @@ func RawStringField(m map[string]any, key string) string {
 	}
 	value, _ := m[key].(string)
 	return value
+}
+
+// FloatFromAny 宽容解析数值：数字、json.Number 与数字字符串。
+//
+// 上游同一字段在不同版本会下发 100 / "100" / 100.5，直接用 float64 断言会
+// 让整条响应解析失败；调用方按 ok=false 决定跳过或记 0。
+func FloatFromAny(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case json.Number:
+		parsed, errParse := typed.Float64()
+		return parsed, errParse == nil
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return 0, false
+		}
+		parsed, errParse := strconv.ParseFloat(trimmed, 64)
+		return parsed, errParse == nil
+	}
+	return 0, false
+}
+
+// IntFromAny 把 JSON 数值转成 int（缺失或非法返回 0，小数截断）。
+func IntFromAny(value any) int {
+	parsed, _ := FloatFromAny(value)
+	return int(parsed)
+}
+
+// Int64FromAny 宽容解析整数；无法解析返回 0。
+func Int64FromAny(value any) int64 {
+	parsed, okParse := FloatFromAny(value)
+	if !okParse {
+		return 0
+	}
+	return int64(parsed)
 }

@@ -11,7 +11,7 @@ import (
 
 	"freetier2api-plugin/cpasdk/pluginapi"
 	"freetier2api-plugin/internal/auth"
-	"freetier2api-plugin/internal/hostbridge/hostbridgetest"
+	"freetier2api-plugin/internal/hostbridge"
 )
 
 // pastedCallback 是浏览器授权后停在 127.0.0.1 上的真实回调链接样本。
@@ -28,6 +28,13 @@ const (
 	upstreamTicketID = "657abbb247eab363d1a461285fc50145"
 	upstreamSecret   = "d55df9259e688e2a71b93f058c748349782ca1a30440473980961ef6833ee280"
 )
+
+// useLoopbackHost 把宿主的 host.http.do 落到真实 http.Client 上。
+func useLoopbackHost(t *testing.T) {
+	t.Helper()
+	hostbridge.ConfigureLoopback()
+	t.Cleanup(func() { hostbridge.Configure(nil) })
+}
 
 // TestParseCallbackTakesUpstreamTicket 锁定解析口径：ticket_id / secret 取自回调
 // （含 redirect 里的门户登录地址），而不是插件自造的那一对。
@@ -60,7 +67,7 @@ func TestParseCallbackRejectsLinkWithoutTicket(t *testing.T) {
 // 回调里那个 ticket_id 是门户的中间票，拿它去查票据接口必然得到「无效ticketId」
 // （实测 TM.00001001）。真正要换的只有 secret——ticket_id 必须仍是本会话自己那个。
 func TestSubmitCallbackKeepsSessionTicket(t *testing.T) {
-	hostbridgetest.UseLoopbackHost(t)
+	useLoopbackHost(t)
 	var gotTicket, gotSecret string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotTicket = r.URL.Query().Get("ticket_id")
@@ -128,7 +135,7 @@ func TestSubmitCallbackRejectsForeignTicket(t *testing.T) {
 // TestSubmitCallbackKeepsPortalURLWhilePending 锁定「还没换到凭证」这一步：把回调里
 // 的门户登录地址带回去，让用户能在能联网的浏览器里继续完成授权，插件则继续轮询。
 func TestSubmitCallbackKeepsPortalURLWhilePending(t *testing.T) {
-	hostbridgetest.UseLoopbackHost(t)
+	useLoopbackHost(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
@@ -163,7 +170,7 @@ func TestSubmitCallbackRejectsUnknownSession(t *testing.T) {
 // （实测：随便编一个 ticket_id 也是这句）。所以这句话**不能**当终态——判成失败
 // 就等于把「用户还没点完授权」永远钉死成「票据已失效，请重新发起登录」。
 func TestSubmitCallbackKeepsWaitingOnInvalidTicket(t *testing.T) {
-	hostbridgetest.UseLoopbackHost(t)
+	useLoopbackHost(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error_code":"TM.00001001","error_msg":"无效ticketId: ` + upstreamTicketID + `"}`))
@@ -197,7 +204,7 @@ func TestSubmitCallbackKeepsWaitingOnInvalidTicket(t *testing.T) {
 // TestSubmitCallbackSurfacesUpstreamNote 锁定诊断信息透传：还在等的时候，页面必须
 // 能看到上游到底说了什么，否则「等待中」既没法自查也没法上报。
 func TestSubmitCallbackSurfacesUpstreamNote(t *testing.T) {
-	hostbridgetest.UseLoopbackHost(t)
+	useLoopbackHost(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"error_code":"TM.00001002","error_msg":"用户尚未完成授权"}`))

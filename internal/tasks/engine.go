@@ -65,9 +65,58 @@ func (s *Service) runTaskScheduler(ctx context.Context) {
 					return
 				}
 			}
-			s.runTaskBatch(ctx, kinds)
+			s.runBatchWithCheckinMinute(ctx, kinds)
 		}
 	}
+}
+
+// runBatchWithCheckinMinute 让 auto_checkin_at 的分钟部分真正生效。
+//
+// 排程粒度是整点；用户配置 10:05 时，签到必须等到 10:05 再跑，否则上游
+// 窗口可能还没开。其他任务族仍在整点执行，只有签到单独等待。
+func (s *Service) runBatchWithCheckinMinute(ctx context.Context, kinds []string) {
+	delay := s.checkinMinuteDelay(s.deps.Now())
+	if delay <= 0 {
+		s.runTaskBatch(ctx, kinds)
+		return
+	}
+	others := make([]string, 0, len(kinds))
+	hasCheckin := false
+	for _, kind := range kinds {
+		if kind == core.TaskKindCheckin {
+			hasCheckin = true
+			continue
+		}
+		others = append(others, kind)
+	}
+	if !hasCheckin {
+		s.runTaskBatch(ctx, kinds)
+		return
+	}
+	if len(others) > 0 {
+		s.runTaskBatch(ctx, others)
+	}
+	logger.Debug("checkin scheduled at %s, waiting %s", s.checkinAt(), delay.Round(time.Second))
+	if !core.SleepContext(ctx, delay) {
+		return
+	}
+	s.runTaskBatch(ctx, []string{core.TaskKindCheckin})
+}
+
+// checkinMinuteDelay 返回距离配置签到分钟还要等多久；0 表示无需等待。
+func (s *Service) checkinMinuteDelay(now time.Time) time.Duration {
+	if !s.effectiveAutoCheckin() {
+		return 0
+	}
+	hour, minute, okClock := parseClock(s.checkinAt())
+	if !okClock || minute == 0 || now.Hour() != hour {
+		return 0
+	}
+	target := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
+	if !now.Before(target) {
+		return 0
+	}
+	return target.Sub(now)
 }
 
 // runTaskBatch 并行派发同一时刻的多个任务族。
@@ -114,18 +163,21 @@ func (s *Service) checkinAt() string {
 
 // parseClockHour 把 HH:MM 转成排程用的整点小时。
 //
-// 排程粒度是整点，分钟部分向上取整而不是丢弃：用户写 10:35 就是希望
-// 10:35 之后才跑（签到窗口常常 10:30 才开），按 10:00 执行会跑空。
-// 23:xx 取整后落到次日 00:00，同样不早于设定时刻。
+// 分钟部分向上取整，确保 10:35 不会在 10:00 提前执行。
 func parseClockHour(value string) (int, bool) {
-	hour, minute, ok := core.ParseClock(value)
-	if !ok {
+	hour, minute, okClock := parseClock(value)
+	if !okClock {
 		return 0, false
 	}
 	if minute > 0 {
 		hour = (hour + 1) % 24
 	}
 	return hour, true
+}
+
+// parseClock 解析 HH:MM，返回小时与分钟。
+func parseClock(value string) (int, int, bool) {
+	return core.ParseClock(value)
 }
 
 // pokeScheduler 唤醒调度循环重新计算下次执行时刻。
